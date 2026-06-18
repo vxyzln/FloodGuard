@@ -1126,7 +1126,17 @@ class FloodGuardWindow(QMainWindow):
                     self.dashboard_update_label.setText(f"Last data update: {str(last_up)}")
             else:
                 self.dashboard_update_label.setText("Last data update: pending")
-        self.score_label.setText(f"{self.city_result.score:.0f}")
+        self.score_label.setText(f"{self.city_result.score:.1f}")
+        score_val = self.city_result.score
+        if score_val <= 50:
+            score_color = PALETTE["green"]
+        elif score_val <= 70:
+            score_color = PALETTE["yellow"]
+        elif score_val <= 90:
+            score_color = PALETTE["orange"]
+        else:
+            score_color = PALETTE["red"]
+        self.score_label.setStyleSheet(f'font-family: "SF Mono", "Menlo"; font-size: 72px; font-weight: bold; color: {score_color};')
         self.alert_badge.setText(level)
         badge_text_color = "#111111" if level in {"Green", "Yellow"} else "#FFFFFF"
         self.alert_badge.setStyleSheet(
@@ -1134,7 +1144,7 @@ class FloodGuardWindow(QMainWindow):
             'font-family: "SF Pro Display"; font-size: 28px; font-weight: bold;'
         )
         if level != "Green":
-            self.dashboard_alert_banner.setText(f"{level.upper()} ALERT - Immediate monitoring recommended.")
+            self.dashboard_alert_banner.setText(f"{level.upper()} ALERT")
             self.dashboard_alert_banner.setStyleSheet(f"background: {color}; color: {badge_text_color}; font-family: 'SF Pro Display'; font-size: 16px; font-weight: bold; padding: 12px; border-radius: 8px;")
             self.dashboard_alert_banner.setVisible(True)
         else:

@@ -23,11 +23,11 @@ INFRA_TYPES = ["hospital", "school", "power_station"]
 
 
 def alert_level(score: float) -> str:
-    if score <= 25:
-        return "Green"
     if score <= 50:
+        return "Green"
+    if score <= 70:
         return "Yellow"
-    if score <= 75:
+    if score <= 90:
         return "Orange"
     return "Red"
 
