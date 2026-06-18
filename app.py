@@ -60,7 +60,7 @@ QFrame#Card {{
 }}
 QPushButton {{
     background: {PALETTE['accent']};
-    color: {PALETTE['text']};
+    color: #FFFFFF;
     border: 0;
     padding: 9px 16px;
     border-radius: 8px;
@@ -94,18 +94,24 @@ QSlider::handle:horizontal {{
     border-radius: 9px;
 }}
 QTableWidget {{
-    background: #FFFFFF;
+    background: {PALETTE['panel']};
+    alternate-background-color: {PALETTE['surface']};
     color: {PALETTE['text']};
     gridline-color: {PALETTE['border']};
     border: 1px solid {PALETTE['border']};
     font-family: "SF Pro Text", "Helvetica Neue";
+    selection-background-color: {PALETTE['accent_hover']};
+    selection-color: #FFFFFF;
+}}
+QTableWidget::item {{
+    padding: 8px;
 }}
 QHeaderView::section {{
     background: {PALETTE['panel']};
-    color: {PALETTE['text']};
-    padding: 6px;
+    color: {PALETTE['muted']};
+    padding: 8px;
     border: 1px solid {PALETTE['border']};
-    font-weight: 600;
+    font-weight: bold;
 }}
 QFrame#TopNav {{
     background: {PALETTE['panel']};
@@ -122,8 +128,9 @@ QPushButton#NavButton {{
     font-weight: 600;
 }}
 QPushButton#NavButton[active="true"] {{
-    background: {PALETTE['border']};
-    color: {PALETTE['accent']};
+    background: {PALETTE['background']};
+    color: {PALETTE['text']};
+    border: 1px solid {PALETTE['border']};
 }}
 QCheckBox#ModeToggle {{
     color: {PALETTE['text']};
@@ -143,8 +150,8 @@ QCheckBox#ModeToggle::indicator:unchecked {{
 }}
 QCheckBox#ModeToggle::indicator:checked {{
     border-radius: 13px;
-    background: {PALETTE['accent']};
-    border: 1px solid {PALETTE['accent']};
+    background: {PALETTE['green']};
+    border: 1px solid {PALETTE['green']};
 }}
 """
 
@@ -409,9 +416,9 @@ class FloodGuardWindow(QMainWindow):
         # Status row below Search
         status_row = QHBoxLayout()
         status_row.setSpacing(18)
-        self.database_status_card = self.home_status_card("Database Status", "Checking", "#EA580C")
-        self.weather_status_card = self.home_status_card("Weather API Status", "Standby", "#EA580C")
-        self.model_status_card = self.home_status_card("Risk Model Status", "Checking", "#EA580C")
+        self.database_status_card = self.home_status_card("Database Status", "Loading", PALETTE["yellow"])
+        self.weather_status_card = self.home_status_card("Weather API Status", "Loading", PALETTE["yellow"])
+        self.model_status_card = self.home_status_card("Risk Model Status", "Loading", PALETTE["yellow"])
         status_row.addWidget(self.database_status_card)
         status_row.addWidget(self.weather_status_card)
         status_row.addWidget(self.model_status_card)
@@ -492,6 +499,12 @@ class FloodGuardWindow(QMainWindow):
         top_bar.addWidget(self.dashboard_status)
         layout.addLayout(top_bar)
 
+        self.dashboard_alert_banner = QLabel("")
+        self.dashboard_alert_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.dashboard_alert_banner.setStyleSheet(f"background: {PALETTE['green']}; color: #FFFFFF; font-family: 'SF Pro Display', 'Helvetica Neue'; font-size: 16px; font-weight: bold; padding: 12px; border-radius: 8px;")
+        self.dashboard_alert_banner.setVisible(False)
+        layout.addWidget(self.dashboard_alert_banner)
+
         main = QHBoxLayout()
         main.setSpacing(18)
         map_card = QFrame()
@@ -556,7 +569,7 @@ class FloodGuardWindow(QMainWindow):
         
         self.score_label = QLabel("0")
         self.score_label.setObjectName("KpiValue")
-        self.score_label.setStyleSheet('font-family: "SF Mono", "Menlo"; font-size: 48px; font-weight: bold;')
+        self.score_label.setStyleSheet('font-family: "SF Mono", "Menlo"; font-size: 72px; font-weight: bold;')
         self.alert_badge = QLabel("Green")
         self.alert_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.highest_zone_label = QLabel("-")
@@ -862,9 +875,9 @@ class FloodGuardWindow(QMainWindow):
         html = f'''
         <div align="{align}">
             <div style="background-color: {bg_color}; border: {border}; border-radius: 8px; padding: 10px; {margin} margin-bottom: 10px; display: inline-block; text-align: left;">
-                <span style="font-weight: bold; color: {PALETTE['accent']};">{sender}</span>
-                <span style="font-size: 11px; color: {PALETTE['muted']}; margin-left: 8px;">{timestamp}</span>
-                <div style="margin-top: 6px; white-space: pre-wrap; font-size: 14px;">{message}</div>
+                <div style="font-weight: bold; color: {PALETTE['accent']};">{sender}</div>
+                <div style="margin-top: 6px; margin-bottom: 6px; white-space: pre-wrap; font-size: 14px;">{message}</div>
+                <div style="font-size: 11px; color: {PALETTE['muted']}; text-align: right;">{timestamp}</div>
             </div>
         </div>
         '''
@@ -1120,6 +1133,12 @@ class FloodGuardWindow(QMainWindow):
             f"background: {color}; color: {badge_text_color}; border-radius: 12px; padding: 10px 14px; "
             'font-family: "SF Pro Display"; font-size: 28px; font-weight: bold;'
         )
+        if level != "Green":
+            self.dashboard_alert_banner.setText(f"{level.upper()} ALERT - Immediate monitoring recommended.")
+            self.dashboard_alert_banner.setStyleSheet(f"background: {color}; color: {badge_text_color}; font-family: 'SF Pro Display'; font-size: 16px; font-weight: bold; padding: 12px; border-radius: 8px;")
+            self.dashboard_alert_banner.setVisible(True)
+        else:
+            self.dashboard_alert_banner.setVisible(False)
         if self.zone_results:
             highest_id, highest = max(self.zone_results.items(), key=lambda item: item[1].score)
             highest_zone = next((zone for zone in self.current_zones if int(zone["zone_id"]) == int(highest_id)), None)
@@ -1468,21 +1487,21 @@ class FloodGuardWindow(QMainWindow):
             
         def success(res: dict) -> None:
             if res["mysql"]:
-                self.set_home_status(self.database_status_card, "Connected", "#16A34A")
+                self.set_home_status(self.database_status_card, "Ready", PALETTE["green"])
             else:
-                self.set_home_status(self.database_status_card, "Disconnected", "#DC2626")
+                self.set_home_status(self.database_status_card, "Error", PALETTE["red"])
                 
             # Weather API
             if self.online_mode:
-                self.set_home_status(self.weather_status_card, "Ready", "#16A34A")
+                self.set_home_status(self.weather_status_card, "Ready", PALETTE["green"])
             else:
-                self.set_home_status(self.weather_status_card, "Cached", "#FACC15")
+                self.set_home_status(self.weather_status_card, "Offline", PALETTE["muted"])
                 
             # Risk Model
             if res["model"]:
-                self.set_home_status(self.model_status_card, "Ready", "#16A34A")
+                self.set_home_status(self.model_status_card, "Ready", PALETTE["green"])
             else:
-                self.set_home_status(self.model_status_card, "Disconnected", "#DC2626")
+                self.set_home_status(self.model_status_card, "Error", PALETTE["red"])
                 
         self.run_background(check_task, success)
 
