@@ -8,3 +8,6 @@ mysql-connector-python
 requests
 Pillow
 PyQt6
+
+folium
+PyQt6-WebEngine
