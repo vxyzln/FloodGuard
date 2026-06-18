@@ -49,32 +49,37 @@ STYLE = f"""
 QMainWindow, QWidget {{
     background: {PALETTE['background']};
     color: {PALETTE['text']};
-    font-family: "SF Pro Text", "Helvetica Neue";
-    font-size: 13px;
+    font-family: "SF Pro Text", "Helvetica Neue", "Arial", sans-serif;
+    font-size: 14px;
 }}
 QFrame#Card {{
     background: {PALETTE['panel']};
     border: 1px solid {PALETTE['border']};
-    border-radius: 8px;
+    border-radius: 12px;
 }}
 QPushButton {{
     background: {PALETTE['accent']};
-    color: #07131F;
+    color: #FFFFFF;
     border: 0;
-    padding: 9px 12px;
+    padding: 9px 16px;
     border-radius: 8px;
     font-weight: 600;
+    font-family: "SF Pro Text", "Helvetica Neue";
+}}
+QPushButton:hover {{
+    background: {PALETTE['accent_hover']};
 }}
 QPushButton:disabled {{
     background: {PALETTE['border']};
     color: {PALETTE['muted']};
 }}
 QComboBox, QLineEdit, QTextEdit {{
-    background: #102033;
+    background: #FFFFFF;
     border: 1px solid {PALETTE['border']};
     border-radius: 8px;
     padding: 8px;
     color: {PALETTE['text']};
+    font-family: "SF Pro Text", "Helvetica Neue";
 }}
 QSlider::groove:horizontal {{
     height: 6px;
@@ -88,16 +93,18 @@ QSlider::handle:horizontal {{
     border-radius: 9px;
 }}
 QTableWidget {{
-    background: #102033;
+    background: #FFFFFF;
     color: {PALETTE['text']};
     gridline-color: {PALETTE['border']};
     border: 1px solid {PALETTE['border']};
+    font-family: "SF Pro Text", "Helvetica Neue";
 }}
 QHeaderView::section {{
     background: {PALETTE['panel']};
     color: {PALETTE['text']};
     padding: 6px;
     border: 1px solid {PALETTE['border']};
+    font-weight: 600;
 }}
 QFrame#TopNav {{
     background: {PALETTE['panel']};
@@ -107,10 +114,10 @@ QPushButton#NavButton {{
     background: transparent;
     color: {PALETTE['muted']};
     border: 0;
-    border-radius: 10px;
-    padding: 10px 14px;
+    border-radius: 8px;
+    padding: 8px 14px;
     font-family: "SF Pro Text", "Helvetica Neue";
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
 }}
 QPushButton#NavButton[active="true"] {{
@@ -119,10 +126,10 @@ QPushButton#NavButton[active="true"] {{
 }}
 QCheckBox#ModeToggle {{
     color: {PALETTE['text']};
-    font-size: 15px;
-    font-weight: 650;
+    font-size: 14px;
+    font-weight: 600;
     font-family: "SF Pro Text", "Helvetica Neue";
-    spacing: 10px;
+    spacing: 8px;
 }}
 QCheckBox#ModeToggle::indicator {{
     width: 46px;
@@ -201,6 +208,15 @@ class FloodGuardWindow(QMainWindow):
         self.active_threads: list[QThread] = []
         self.active_workers: list[BackgroundWorker] = []
         self.risk_request_id = 0
+        
+        # Real and Scenario Data separation variables
+        self.real_rainfall = 0.0
+        self.real_river_level = 0.0
+        self.real_temperature = 0.0
+        self.real_humidity = 0.0
+        self.real_wind_speed = 0.0
+        self.scenario_rainfall = 0.0
+        self.scenario_river_level = 0.0
         app_instance = QApplication.instance()
         if app_instance:
             app_instance.aboutToQuit.connect(self.shutdown_workers)
@@ -233,7 +249,7 @@ class FloodGuardWindow(QMainWindow):
         layout = QHBoxLayout(nav)
         layout.setContentsMargins(22, 12, 22, 12)
         layout.setSpacing(8)
-        for index, label in enumerate(["Home", "Dashboard", "Risk Map", "Evacuation", "Trends", "AI Advisor"]):
+        for index, label in enumerate(["Home", "Dashboard", "Map", "Evacuation", "Trends", "AI Advisor"]):
             button = QPushButton(label)
             button.setObjectName("NavButton")
             button.setProperty("active", "false")
@@ -292,58 +308,61 @@ class FloodGuardWindow(QMainWindow):
     def build_home(self) -> None:
         page = QWidget()
         page.setStyleSheet(
-            """
-            QWidget {
-                background: #F5F5F7;
-                color: #111111;
+            f"""
+            QWidget {{
+                background: {PALETTE['background']};
+                color: {PALETTE['text']};
                 font-family: "SF Pro Text", "Helvetica Neue";
-            }
-            QLabel#HomeTitle {
+            }}
+            QLabel#HomeTitle {{
                 font-family: "SF Pro Display", "Helvetica Neue";
-                font-size: 48px;
+                font-size: 32px;
                 font-weight: 700;
-                color: #111111;
-            }
-            QLabel#HomeSubtitle {
+                color: {PALETTE['text']};
+            }}
+            QLabel#HomeSubtitle {{
                 font-family: "SF Pro Text", "Helvetica Neue";
-                font-size: 22px;
-                color: #666666;
-            }
-            QLabel#HomeSection {
+                font-size: 16px;
+                color: {PALETTE['muted']};
+            }}
+            QLabel#HomeSection {{
                 font-family: "SF Pro Display", "Helvetica Neue";
                 font-size: 22px;
-                font-weight: 650;
-                color: #111111;
-            }
-            QFrame#HomeCard {
+                font-weight: 600;
+                color: {PALETTE['text']};
+            }}
+            QFrame#HomeCard {{
+                background: {PALETTE['panel']};
+                border: 1px solid {PALETTE['border']};
+                border-radius: 12px;
+            }}
+            QLineEdit#CitySearch {{
                 background: #FFFFFF;
-                border: 1px solid #E5E5E5;
-                border-radius: 18px;
-            }
-            QLineEdit#CitySearch {
-                background: #FFFFFF;
-                border: 1px solid #E5E5E5;
-                border-radius: 18px;
-                padding: 18px 24px;
-                color: #111111;
-                font-size: 26px;
+                border: 1px solid {PALETTE['border']};
+                border-radius: 12px;
+                padding: 12px 18px;
+                color: {PALETTE['text']};
+                font-size: 18px;
                 font-family: "SF Pro Text", "Helvetica Neue";
-            }
-            QPushButton#OpenDashboard {
-                background: #2563EB;
+            }}
+            QPushButton#OpenDashboard {{
+                background: {PALETTE['accent']};
                 color: #FFFFFF;
                 border: 0;
-                border-radius: 18px;
-                padding: 20px 28px;
-                font-size: 24px;
-                font-weight: 700;
+                border-radius: 12px;
+                padding: 14px 22px;
+                font-size: 18px;
+                font-weight: 600;
                 font-family: "SF Pro Display", "Helvetica Neue";
-            }
+            }}
+            QPushButton#OpenDashboard:hover {{
+                background: {PALETTE['accent_hover']};
+            }}
             """
         )
         layout = QVBoxLayout(page)
         layout.setContentsMargins(54, 42, 54, 42)
-        layout.setSpacing(28)
+        layout.setSpacing(24)
 
         top = QHBoxLayout()
         title_box = QVBoxLayout()
@@ -356,16 +375,7 @@ class FloodGuardWindow(QMainWindow):
         top.addLayout(title_box, 1)
         layout.addLayout(top)
 
-        status_row = QHBoxLayout()
-        status_row.setSpacing(18)
-        self.database_status_card = self.home_status_card("Database", "Checking", "#EA580C")
-        self.weather_status_card = self.home_status_card("Weather API", "Standby", "#EA580C")
-        self.model_status_card = self.home_status_card("Risk Model", "Checking", "#EA580C")
-        status_row.addWidget(self.database_status_card)
-        status_row.addWidget(self.weather_status_card)
-        status_row.addWidget(self.model_status_card)
-        layout.addLayout(status_row)
-
+        # Center Search card
         search_wrap = QFrame()
         search_wrap.setObjectName("HomeCard")
         search_layout = QVBoxLayout(search_wrap)
@@ -379,9 +389,9 @@ class FloodGuardWindow(QMainWindow):
         self.city_search.textChanged.connect(self.update_search_prompt)
         self.city_search.returnPressed.connect(self.run_city_search)
         self.home_message = QLabel("Press Enter to check city data.")
-        self.home_message.setStyleSheet('font-family: "SF Pro Text"; font-size: 17px; color: #666666;')
+        self.home_message.setStyleSheet('font-family: "SF Pro Text"; font-size: 15px; color: #666666;')
         self.home_loading = QLabel("")
-        self.home_loading.setStyleSheet('font-family: "SF Pro Text"; font-size: 15px; color: #EA580C;')
+        self.home_loading.setStyleSheet('font-family: "SF Pro Text"; font-size: 14px; color: #EA580C;')
         search_layout.addWidget(search_label)
         search_layout.addWidget(self.city_search)
         search_layout.addWidget(self.home_message)
@@ -392,6 +402,18 @@ class FloodGuardWindow(QMainWindow):
         self.open_dashboard_button.setObjectName("OpenDashboard")
         self.open_dashboard_button.clicked.connect(self.open_dashboard)
         layout.addWidget(self.open_dashboard_button)
+
+        # Status row below Search
+        status_row = QHBoxLayout()
+        status_row.setSpacing(18)
+        self.database_status_card = self.home_status_card("Database Status", "Checking", "#EA580C")
+        self.weather_status_card = self.home_status_card("Weather API Status", "Standby", "#EA580C")
+        self.model_status_card = self.home_status_card("Risk Model Status", "Checking", "#EA580C")
+        status_row.addWidget(self.database_status_card)
+        status_row.addWidget(self.weather_status_card)
+        status_row.addWidget(self.model_status_card)
+        layout.addLayout(status_row)
+
         layout.addStretch()
         self.stack.addWidget(page)
         self.update_home_status_cards()
@@ -480,27 +502,80 @@ class FloodGuardWindow(QMainWindow):
         self.dashboard_zone_summary.setObjectName("DashboardMeta")
         map_layout.addWidget(self.dashboard_map_canvas, 1)
         map_layout.addWidget(self.dashboard_zone_summary)
-        main.addWidget(map_card, 8)
+        main.addWidget(map_card, 65)
 
-        kpi_grid = QGridLayout()
-        kpi_grid.setSpacing(14)
-        self.score_label = QLabel("0")
-        self.score_label.setObjectName("KpiValue")
-        self.alert_badge = QLabel("Green")
-        self.alert_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.highest_zone_label = QLabel("-")
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(14)
+        
+        # Current Conditions Card
+        current_card = QFrame()
+        current_card.setObjectName("DashboardCard")
+        current_layout = QVBoxLayout(current_card)
+        current_layout.setContentsMargins(16, 14, 16, 14)
+        current_layout.setSpacing(10)
+        current_title = QLabel("Current Conditions")
+        current_title.setObjectName("KpiTitle")
+        current_layout.addWidget(current_title)
+        
+        self.real_rain_label = QLabel("-")
+        self.real_river_label = QLabel("-")
         self.temp_label = QLabel("-")
         self.humidity_label = QLabel("-")
         self.wind_speed_label = QLabel("-")
-        kpi_grid.addWidget(self.dashboard_kpi_card("Flood Risk Score", self.score_label), 0, 0)
-        kpi_grid.addWidget(self.dashboard_kpi_card("Alert Level", self.alert_badge), 0, 1)
-        kpi_grid.addWidget(self.dashboard_kpi_card("Highest Risk Zone", self.highest_zone_label), 1, 0)
-        kpi_grid.addWidget(self.dashboard_kpi_card("Temperature", self.temp_label), 1, 1)
-        kpi_grid.addWidget(self.dashboard_kpi_card("Humidity", self.humidity_label), 2, 0)
-        kpi_grid.addWidget(self.dashboard_kpi_card("Wind Speed", self.wind_speed_label), 2, 1)
-        main.addLayout(kpi_grid, 3)
+        
+        def add_kpi_row(layout_obj, label_text, val_lbl):
+            row = QHBoxLayout()
+            lbl = QLabel(label_text)
+            lbl.setObjectName("DashboardMeta")
+            val_lbl.setObjectName("DashboardMeta")
+            val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            row.addWidget(lbl)
+            row.addWidget(val_lbl)
+            layout_obj.addLayout(row)
+            
+        add_kpi_row(current_layout, "Rainfall", self.real_rain_label)
+        add_kpi_row(current_layout, "River Level", self.real_river_label)
+        add_kpi_row(current_layout, "Temperature", self.temp_label)
+        add_kpi_row(current_layout, "Humidity", self.humidity_label)
+        add_kpi_row(current_layout, "Wind Speed", self.wind_speed_label)
+        
+        right_panel.addWidget(current_card)
+        
+        # Predicted Impact Card
+        impact_card = QFrame()
+        impact_card.setObjectName("DashboardCard")
+        impact_layout = QVBoxLayout(impact_card)
+        impact_layout.setContentsMargins(16, 14, 16, 14)
+        impact_layout.setSpacing(8)
+        impact_title = QLabel("Predicted Impact")
+        impact_title.setObjectName("KpiTitle")
+        impact_layout.addWidget(impact_title)
+        
+        self.score_label = QLabel("0")
+        self.score_label.setObjectName("KpiValue")
+        self.score_label.setStyleSheet('font-family: "SF Mono", "Menlo"; font-size: 48px; font-weight: bold;')
+        self.alert_badge = QLabel("Green")
+        self.alert_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.highest_zone_label = QLabel("-")
+        self.highest_zone_label.setObjectName("KpiValue")
+        self.highest_zone_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold;')
+        
+        def add_impact_item(layout_obj, label_text, val_lbl):
+            lbl = QLabel(label_text)
+            lbl.setObjectName("KpiTitle")
+            layout_obj.addWidget(lbl)
+            layout_obj.addWidget(val_lbl)
+            
+        add_impact_item(impact_layout, "Predicted Risk Score", self.score_label)
+        add_impact_item(impact_layout, "Alert Level", self.alert_badge)
+        add_impact_item(impact_layout, "Highest Risk Zone", self.highest_zone_label)
+        
+        right_panel.addWidget(impact_card)
+        
+        main.addLayout(right_panel, 35)
         layout.addLayout(main, 1)
-
+ 
+        # Scenario Controls Card
         control_card = QFrame()
         control_card.setObjectName("DashboardCard")
         control_layout = QGridLayout(control_card)
@@ -508,25 +583,34 @@ class FloodGuardWindow(QMainWindow):
         control_layout.setSpacing(12)
         control_title = QLabel("Scenario Controls")
         control_title.setObjectName("KpiTitle")
+        
         self.rainfall_slider = QSlider(Qt.Orientation.Horizontal)
-        self.rainfall_slider.setRange(0, 160)
+        self.rainfall_slider.setRange(-100, 200)
         self.river_slider = QSlider(Qt.Orientation.Horizontal)
-        self.river_slider.setRange(10, 80)
+        self.river_slider.setRange(-100, 200)
         self.rainfall_value = QLabel()
         self.river_value = QLabel()
         self.rainfall_slider.valueChanged.connect(self.update_from_sliders)
         self.river_slider.valueChanged.connect(self.update_from_sliders)
-        rain_label = QLabel("Rainfall")
-        river_label = QLabel("River Level")
+        
+        rain_label = QLabel("Rainfall Scenario")
+        river_label = QLabel("River Level Scenario")
+        self.reset_scenario_btn = QPushButton("Reset Scenario")
+        self.reset_scenario_btn.clicked.connect(self.reset_scenario)
+        self.reset_scenario_btn.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 8px 14px; border-radius: 6px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
+        
         for label in [rain_label, river_label, self.rainfall_value, self.river_value]:
             label.setObjectName("DashboardMeta")
-        control_layout.addWidget(control_title, 0, 0, 1, 4)
+            
+        control_layout.addWidget(control_title, 0, 0, 1, 7)
         control_layout.addWidget(rain_label, 1, 0)
         control_layout.addWidget(self.rainfall_slider, 1, 1)
         control_layout.addWidget(self.rainfall_value, 1, 2)
         control_layout.addWidget(river_label, 1, 3)
         control_layout.addWidget(self.river_slider, 1, 4)
         control_layout.addWidget(self.river_value, 1, 5)
+        control_layout.addWidget(self.reset_scenario_btn, 1, 6)
+        
         layout.addWidget(control_card)
         self.stack.addWidget(page)
 
@@ -586,13 +670,44 @@ class FloodGuardWindow(QMainWindow):
         layout.addWidget(side_card, 1)
         self.stack.addWidget(page)
 
+    def evac_summary_card(self, title: str) -> tuple[QFrame, QLabel]:
+        frame = QFrame()
+        frame.setObjectName("Card")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(6)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"font-family: 'SF Pro Text'; font-size: 13px; color: {PALETTE['muted']}; font-weight: 500;")
+        value_label = QLabel("0")
+        value_label.setStyleSheet(f"font-family: 'SF Mono', 'Menlo'; font-size: 32px; font-weight: bold; color: {PALETTE['accent']};")
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        return frame, value_label
+
     def build_evacuation(self) -> None:
         page = QWidget()
-        layout = QGridLayout(page)
+        layout = QVBoxLayout(page)
         layout.setContentsMargins(24, 22, 24, 24)
-        layout.setSpacing(16)
+        layout.setSpacing(18)
         
-        plan_card, plan_layout = card("Priority Ranking")
+        # Summary Row at the top
+        summary_row = QHBoxLayout()
+        summary_row.setSpacing(16)
+        
+        teams_card, self.evac_teams_label = self.evac_summary_card("Teams Required")
+        boats_card, self.evac_boats_label = self.evac_summary_card("Boats Required")
+        zones_card, self.evac_critical_zones_label = self.evac_summary_card("Critical Risk Zones")
+        
+        summary_row.addWidget(teams_card)
+        summary_row.addWidget(boats_card)
+        summary_row.addWidget(zones_card)
+        layout.addLayout(summary_row)
+        
+        # Grid area below summary
+        grid = QGridLayout()
+        grid.setSpacing(16)
+        
+        plan_card, plan_layout = card("Highest Priority Zones")
         self.priority_table = QTableWidget(0, 5)
         self.priority_table.setHorizontalHeaderLabels(["Zone", "Nearest Shelter", "Evacuation Priority", "Teams Required", "Boats Required"])
         plan_layout.addWidget(self.priority_table)
@@ -610,13 +725,15 @@ class FloodGuardWindow(QMainWindow):
         select_layout.addWidget(self.route_select_combo, 1)
         route_layout.addLayout(select_layout)
         
-        shelter_card, shelter_layout = card("Shelter Capacity")
+        shelter_card, shelter_layout = card("Shelter Occupancy")
         self.shelter_box = QVBoxLayout()
         shelter_layout.addLayout(self.shelter_box)
         
-        layout.addWidget(plan_card, 0, 0, 2, 1)
-        layout.addWidget(route_card, 0, 1)
-        layout.addWidget(shelter_card, 1, 1)
+        grid.addWidget(plan_card, 0, 0, 2, 1)
+        grid.addWidget(route_card, 0, 1)
+        grid.addWidget(shelter_card, 1, 1)
+        layout.addLayout(grid, 1)
+        
         self.stack.addWidget(page)
 
     def build_trends(self) -> None:
@@ -639,21 +756,77 @@ class FloodGuardWindow(QMainWindow):
 
     def build_advisor(self) -> None:
         page = QWidget()
-        layout = QVBoxLayout(page)
+        layout = QHBoxLayout(page)
         layout.setContentsMargins(24, 22, 24, 24)
-        ai_card, ai_layout = card("AI Advisor")
+        layout.setSpacing(18)
+        
+        # Left card for assistant chat
+        chat_card, chat_layout = card("Emergency Planning Assistant")
         self.ai_status = QLabel("Local AI advisor not checked yet.")
+        self.ai_status.setStyleSheet("font-size: 13px; color: " + PALETTE["muted"] + ";")
+        
         self.ai_chat = QTextEdit()
+        self.ai_chat.setReadOnly(True)
+        self.ai_chat.setStyleSheet("background: #FFFFFF; border: 1px solid " + PALETTE["border"] + "; font-family: 'SF Pro Text'; font-size: 14px; padding: 10px; border-radius: 8px;")
+        
+        input_row = QHBoxLayout()
         self.ai_input = QLineEdit()
-        self.ai_send = QPushButton("Send")
+        self.ai_input.setPlaceholderText("Query the planning assistant...")
+        self.ai_input.setStyleSheet("font-size: 14px; padding: 10px;")
+        self.ai_input.returnPressed.connect(self.ask_ai)
+        
+        self.ai_send = QPushButton("Send Query")
         self.ai_send.clicked.connect(self.ask_ai)
-        ai_layout.addWidget(self.ai_status)
-        ai_layout.addWidget(self.ai_chat)
-        ai_layout.addWidget(self.ai_input)
-        ai_layout.addWidget(self.ai_send)
-        layout.addWidget(ai_card)
+        self.ai_send.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 10px 18px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
+        
+        input_row.addWidget(self.ai_input, 1)
+        input_row.addWidget(self.ai_send)
+        
+        chat_layout.addWidget(self.ai_status)
+        chat_layout.addWidget(self.ai_chat, 1)
+        chat_layout.addLayout(input_row)
+        
+        # Right card for presets
+        presets_card, presets_layout = card("Command Briefings")
+        presets_layout.setSpacing(14)
+        
+        info_lbl = QLabel("Generate automated operational briefings for the EOC command staff:")
+        info_lbl.setObjectName("DashboardMeta")
+        info_lbl.setWordWrap(True)
+        info_lbl.setStyleSheet("font-size: 13px; line-height: 1.4;")
+        presets_layout.addWidget(info_lbl)
+        
+        self.btn_actions = QPushButton("Generate Suggested Actions")
+        self.btn_actions.clicked.connect(lambda: self.ask_ai_preset("actions"))
+        
+        self.btn_risk = QPushButton("Generate Risk Summary")
+        self.btn_risk.clicked.connect(lambda: self.ask_ai_preset("risk"))
+        
+        self.btn_evac = QPushButton("Generate Evacuation Summary")
+        self.btn_evac.clicked.connect(lambda: self.ask_ai_preset("evac"))
+        
+        for btn in [self.btn_actions, self.btn_risk, self.btn_evac]:
+            btn.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['panel']}; border: 1px solid {PALETTE['border']}; color: {PALETTE['text']}; text-align: left; padding: 12px 14px; font-weight: 600; font-size: 14px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['surface']}; }}")
+            presets_layout.addWidget(btn)
+            
+        presets_layout.addStretch()
+        
+        layout.addWidget(chat_card, 2)
+        layout.addWidget(presets_card, 1)
         self.stack.addWidget(page)
         self.check_ollama()
+
+    def ask_ai_preset(self, preset_type: str) -> None:
+        prompts = {
+            "actions": "Draft a list of immediate emergency actions for disaster response teams based on the current city state. Focus on deployment priorities, resource allocation, and warning alerts.",
+            "risk": "Provide a concise operational summary of the current meteorological conditions and flood risk score. Highlight any zones reaching critical risk thresholds.",
+            "evac": "Provide a briefing on the evacuation progress, nearest shelters, required rescue teams, and boats. Detail how shelter occupancy is distributed."
+        }
+        prompt = prompts.get(preset_type, "")
+        if not prompt:
+            return
+        self.ai_input.setText(prompt)
+        self.ask_ai()
 
     def toggle_online(self) -> None:
         self.online_mode = self.mode_toggle.isChecked()
@@ -705,15 +878,28 @@ class FloodGuardWindow(QMainWindow):
             self.compare_combo.blockSignals(False)
 
     def set_default_sliders(self) -> None:
-        if not self.current_history:
-            self.rainfall_slider.setValue(30)
-            self.river_slider.setValue(35)
+        if not self.current_city:
             return
-        recent = self.current_history[-1]
+            
+        self.real_temperature = float(self.current_city.get("temperature") or 0.0)
+        self.real_humidity = float(self.current_city.get("humidity") or 0.0)
+        self.real_wind_speed = float(self.current_city.get("wind_speed") or 0.0)
+        
+        if self.current_history:
+            recent = self.current_history[-1]
+            self.real_rainfall = float(recent.get("rainfall_mm") or 0.0)
+            self.real_river_level = float(recent.get("river_level_m") or 1.5)
+        else:
+            self.real_rainfall = float(self.current_city.get("rainfall") or 0.0)
+            self.real_river_level = 1.5
+            
+        self.scenario_rainfall = self.real_rainfall
+        self.scenario_river_level = self.real_river_level
+        
         self.rainfall_slider.blockSignals(True)
         self.river_slider.blockSignals(True)
-        self.rainfall_slider.setValue(int(float(recent["rainfall_mm"])))
-        self.river_slider.setValue(int(float(recent["river_level_m"]) * 10))
+        self.rainfall_slider.setValue(0)
+        self.river_slider.setValue(0)
         self.rainfall_slider.blockSignals(False)
         self.river_slider.blockSignals(False)
 
@@ -738,15 +924,29 @@ class FloodGuardWindow(QMainWindow):
             return payload
 
         def success(payload: dict) -> None:
-            rainfall = min(160, int(payload["rainfall_mm"]))
-            self.rainfall_slider.setValue(rainfall)
-            self.last_data_update = datetime.now()
+            self.real_temperature = float(payload["temperature"])
+            self.real_humidity = float(payload["humidity"])
+            self.real_wind_speed = float(payload["wind_speed"])
+            self.real_rainfall = float(payload["rainfall_mm"])
             
-            # Update local state
+            # Keep current city metadata updated
             self.current_city["temperature"] = payload["temperature"]
             self.current_city["humidity"] = payload["humidity"]
             self.current_city["wind_speed"] = payload["wind_speed"]
             self.current_city["rainfall"] = payload["rainfall_mm"]
+            
+            # Sync scenario variables
+            self.scenario_rainfall = self.real_rainfall
+            self.scenario_river_level = self.real_river_level
+            
+            self.rainfall_slider.blockSignals(True)
+            self.river_slider.blockSignals(True)
+            self.rainfall_slider.setValue(0)
+            self.river_slider.setValue(0)
+            self.rainfall_slider.blockSignals(False)
+            self.river_slider.blockSignals(False)
+            
+            self.last_data_update = datetime.now()
             
             if hasattr(self, "weather_status_card"):
                 self.set_home_status(self.weather_status_card, "Ready", "#16A34A")
@@ -770,10 +970,24 @@ class FloodGuardWindow(QMainWindow):
     def update_from_sliders(self) -> None:
         if not self.current_zones:
             return
-        rainfall = float(self.rainfall_slider.value())
-        river = float(self.river_slider.value()) / 10
-        self.rainfall_value.setText(f"{rainfall:.0f} mm")
-        self.river_value.setText(f"{river:.1f} m")
+        rain_pct = float(self.rainfall_slider.value())
+        river_pct = float(self.river_slider.value())
+        
+        if self.real_rainfall > 0.0:
+            self.scenario_rainfall = max(0.0, self.real_rainfall * (1.0 + rain_pct / 100.0))
+        else:
+            self.scenario_rainfall = max(0.0, (rain_pct / 100.0) * 100.0) if rain_pct > 0 else 0.0
+            
+        if self.real_river_level > 0.0:
+            self.scenario_river_level = max(0.0, self.real_river_level * (1.0 + river_pct / 100.0))
+        else:
+            self.scenario_river_level = max(0.0, (river_pct / 100.0) * 5.0) if river_pct > 0 else 0.0
+            
+        rain_sign = "+" if rain_pct >= 0 else ""
+        river_sign = "+" if river_pct >= 0 else ""
+        self.rainfall_value.setText(f"{self.scenario_rainfall:.1f} mm ({rain_sign}{rain_pct:.0f}%)")
+        self.river_value.setText(f"{self.scenario_river_level:.1f} m ({river_sign}{river_pct:.0f}%)")
+        
         self.risk_request_id += 1
         request_id = self.risk_request_id
         zones = [dict(zone) for zone in self.current_zones]
@@ -784,11 +998,11 @@ class FloodGuardWindow(QMainWindow):
             self.dashboard_status.setText("Updating scenario...")
 
         def task() -> dict:
-            res = self.risk_service.score_scenario(rainfall, river, zones, history)
+            res = self.risk_service.score_scenario(self.scenario_rainfall, self.scenario_river_level, zones, history)
             self.cache_service.log_simulation(
                 city_id,
-                rainfall,
-                river,
+                self.scenario_rainfall,
+                self.scenario_river_level,
                 res["city_result"].score,
                 res["city_result"].confidence_low,
                 res["city_result"].confidence_high,
@@ -799,6 +1013,17 @@ class FloodGuardWindow(QMainWindow):
             return {"request_id": request_id, "zone_results": res["zone_results"], "city_result": res["city_result"]}
 
         self.run_background(task, self.apply_risk_result)
+
+    def reset_scenario(self) -> None:
+        self.scenario_rainfall = self.real_rainfall
+        self.scenario_river_level = self.real_river_level
+        self.rainfall_slider.blockSignals(True)
+        self.river_slider.blockSignals(True)
+        self.rainfall_slider.setValue(0)
+        self.river_slider.setValue(0)
+        self.rainfall_slider.blockSignals(False)
+        self.river_slider.blockSignals(False)
+        self.update_from_sliders()
 
     def apply_risk_result(self, payload: dict) -> None:
         if payload["request_id"] != self.risk_request_id:
@@ -835,8 +1060,8 @@ class FloodGuardWindow(QMainWindow):
         self.alert_badge.setText(level)
         badge_text_color = "#111111" if level in {"Green", "Yellow"} else "#FFFFFF"
         self.alert_badge.setStyleSheet(
-            f"background: {color}; color: {badge_text_color}; border-radius: 14px; padding: 14px; "
-            'font-family: "SF Pro Display"; font-size: 32px; font-weight: 800;'
+            f"background: {color}; color: {badge_text_color}; border-radius: 12px; padding: 10px 14px; "
+            'font-family: "SF Pro Display"; font-size: 28px; font-weight: bold;'
         )
         if self.zone_results:
             highest_id, highest = max(self.zone_results.items(), key=lambda item: item[1].score)
@@ -845,13 +1070,11 @@ class FloodGuardWindow(QMainWindow):
         else:
             self.highest_zone_label.setText("-")
             
-        temp = self.current_city.get("temperature")
-        hum = self.current_city.get("humidity")
-        wind = self.current_city.get("wind_speed")
-        
-        self.temp_label.setText(f"{temp:.1f} °C" if temp is not None else "-")
-        self.humidity_label.setText(f"{hum:.0f}%" if hum is not None else "-")
-        self.wind_speed_label.setText(f"{wind:.1f} km/h" if wind is not None else "-")
+        self.real_rain_label.setText(f"{self.real_rainfall:.1f} mm")
+        self.real_river_label.setText(f"{self.real_river_level:.1f} m")
+        self.temp_label.setText(f"{self.real_temperature:.1f} °C" if self.real_temperature is not None else "-")
+        self.humidity_label.setText(f"{self.real_humidity:.0f}%" if self.real_humidity is not None else "-")
+        self.wind_speed_label.setText(f"{self.real_wind_speed:.1f} km/h" if self.real_wind_speed is not None else "-")
         
         self.redraw_dashboard_map()
 
@@ -1000,6 +1223,16 @@ class FloodGuardWindow(QMainWindow):
         if not self.planner:
             return
         plan = self.planner.plan(self.zone_scores)
+        
+        # Populate Summary Card Labels
+        total_teams = sum(row['teams'] for row in plan)
+        total_boats = sum(row['boats'] for row in plan)
+        critical_zones = sum(1 for row in plan if row['priority_score'] > 100000)
+        
+        self.evac_teams_label.setText(str(total_teams))
+        self.evac_boats_label.setText(str(total_boats))
+        self.evac_critical_zones_label.setText(str(critical_zones))
+        
         self.priority_table.setRowCount(len(plan))
         for row_idx, row in enumerate(plan):
             score = row['priority_score']
@@ -1025,10 +1258,15 @@ class FloodGuardWindow(QMainWindow):
         clear_layout(self.shelter_box)
         for shelter in self.current_shelters:
             label = QLabel(f"{shelter['name']} ({shelter['current_occupancy']:,}/{shelter['capacity']:,})")
+            label.setStyleSheet("font-family: 'SF Pro Text'; font-size: 13px; font-weight: 500;")
             progress = QProgressBar()
             progress.setMaximum(int(shelter["capacity"]))
             progress.setValue(int(shelter["current_occupancy"]))
             progress.setFormat("%p% occupied")
+            progress.setStyleSheet(
+                f"QProgressBar {{ background: {PALETTE['surface']}; border: 0; border-radius: 6px; text-align: center; color: {PALETTE['text']}; font-weight: bold; font-family: 'SF Pro Text'; height: 20px; }} "
+                f"QProgressBar::chunk {{ background: {PALETTE['accent']}; border-radius: 6px; }}"
+            )
             self.shelter_box.addWidget(label)
             self.shelter_box.addWidget(progress)
             
@@ -1256,25 +1494,25 @@ class FloodGuardWindow(QMainWindow):
             if status == "local":
                 city_name = result["city_name"]
                 if hasattr(self, "home_message"):
-                    self.home_message.setText("✓ Data loaded from local database")
+                    self.home_message.setText("✓ Data Ready")
                 if hasattr(self, "home_loading"):
-                    self.home_loading.setText("Data loaded from local database")
-                self.update_cities_list_and_load(city_name, "Data loaded from local database")
+                    self.home_loading.setText("✓ Data Ready")
+                self.update_cities_list_and_load(city_name, "Data Ready")
                 
             elif status == "offline_missing":
                 if hasattr(self, "home_message"):
-                    self.home_message.setText("✗ City unavailable offline")
+                    self.home_message.setText("✗ City Unavailable Offline")
                 if hasattr(self, "home_loading"):
-                    self.home_loading.setText("City unavailable offline")
-                QMessageBox.information(self, "City Not Available", "City unavailable offline")
+                    self.home_loading.setText("✗ City Unavailable Offline")
+                QMessageBox.information(self, "City Not Available", "City Unavailable Offline")
                 
             elif status == "downloaded":
                 city_name = result["city_name"]
                 if hasattr(self, "home_message"):
-                    self.home_message.setText("✓ Data downloaded and cached")
+                    self.home_message.setText("✓ Downloaded and Cached")
                 if hasattr(self, "home_loading"):
-                    self.home_loading.setText("Data downloaded and cached")
-                self.update_cities_list_and_load(city_name, "Data downloaded and cached")
+                    self.home_loading.setText("✓ Downloaded and Cached")
+                self.update_cities_list_and_load(city_name, "Downloaded and Cached")
                 
         def failed(msg: str) -> None:
             if hasattr(self, "home_loading"):

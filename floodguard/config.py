@@ -10,15 +10,17 @@ CACHE_PATH = ASSETS_DIR / "seed_cache.json"
 MODEL_PATH = MODELS_DIR / "flood_risk_model.joblib"
 
 PALETTE = {
-    "background": "#0F1B2D",
-    "panel": "#16263D",
-    "border": "#233247",
-    "accent": "#2DD4BF",
-    "text": "#E5E7EB",
-    "muted": "#94A3B8",
-    "green": "#22C55E",
-    "yellow": "#FACC15",
-    "orange": "#F97316",
-    "red": "#EF4444",
+    "background": "#F8F6F2",
+    "panel": "#FFFFFF",
+    "surface": "#F1EFEA",
+    "border": "#D6D3D1",
+    "text": "#111827",
+    "muted": "#6B7280",
+    "accent": "#0F766E",
+    "accent_hover": "#115E59",
+    "green": "#16A34A",
+    "yellow": "#CA8A04",
+    "orange": "#EA580C",
+    "red": "#DC2626",
 }
 
