@@ -147,12 +147,15 @@ class FloodRepository:
         )
         self.cache_path.write_text(json.dumps(self.cache, indent=2, default=str))
 
-    def add_city(self, name: str, latitude: float, longitude: float) -> dict[str, Any]:
-        next_id = max(int(city["city_id"]) for city in self.cache["cities"]) + 1
+    def add_city(self, name: str, latitude: float, longitude: float, state: str = "Custom", rainfall_mm: float = 0.0) -> dict[str, Any]:
+        existing = self.city_by_name(name)
+        if existing:
+            return existing
+        next_id = self._next_city_id()
         city = {
             "city_id": next_id,
             "name": name,
-            "state": "Custom",
+            "state": state or "Custom",
             "latitude": latitude,
             "longitude": longitude,
             "map_image_path": f"assets/maps/{name.lower().replace(' ', '_')}.png",
@@ -186,6 +189,89 @@ class FloodRepository:
                     "current_occupancy": 400,
                 }
             )
+        self.cache.setdefault("infrastructure", []).append(
+            {
+                "infra_id": next_id * 1000 + 1,
+                "city_id": next_id,
+                "zone_id": next_id * 100 + 1,
+                "type": "hospital",
+                "name": f"{name} Relief Hospital",
+                "latitude": latitude + 0.02,
+                "longitude": longitude - 0.02,
+            }
+        )
+        self.cache.setdefault("rainfall_river_history", []).append(
+            {
+                "city_id": next_id,
+                "date": datetime.now().date().isoformat(),
+                "rainfall_mm": round(float(rainfall_mm), 2),
+                "river_level_m": 3.0,
+                "flood_occurred": bool(float(rainfall_mm) > 70),
+            }
+        )
         self.cache_path.write_text(json.dumps(self.cache, indent=2))
+        if self.using_mysql:
+            try:
+                self._insert_city_bundle(city)
+            except MySQLError:
+                self.using_mysql = False
         return city
 
+    def _next_city_id(self) -> int:
+        if self.using_mysql:
+            try:
+                rows = fetch_all("SELECT COALESCE(MAX(city_id), 0) AS max_id FROM cities")
+                return int(rows[0]["max_id"]) + 1
+            except Exception:
+                self.using_mysql = False
+        return max(int(city["city_id"]) for city in self.cache["cities"]) + 1
+
+    def _insert_city_bundle(self, city: dict[str, Any]) -> None:
+        zones = [row for row in self.cache["zones"] if int(row["city_id"]) == int(city["city_id"])]
+        shelters = [row for row in self.cache["shelters"] if int(row["city_id"]) == int(city["city_id"])]
+        infrastructure = [row for row in self.cache["infrastructure"] if int(row["city_id"]) == int(city["city_id"])]
+        history = [row for row in self.cache["rainfall_river_history"] if int(row["city_id"]) == int(city["city_id"])]
+        with mysql_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO cities
+                (city_id, name, state, latitude, longitude, map_image_path, map_lat_min, map_lat_max, map_long_min, map_long_max)
+                VALUES (%(city_id)s,%(name)s,%(state)s,%(latitude)s,%(longitude)s,%(map_image_path)s,%(map_lat_min)s,%(map_lat_max)s,%(map_long_min)s,%(map_long_max)s)
+                """,
+                city,
+            )
+            cursor.executemany(
+                """
+                INSERT INTO zones
+                (zone_id, city_id, name, latitude, longitude, elevation_m, population, historical_flood_frequency)
+                VALUES (%(zone_id)s,%(city_id)s,%(name)s,%(latitude)s,%(longitude)s,%(elevation_m)s,%(population)s,%(historical_flood_frequency)s)
+                """,
+                zones,
+            )
+            cursor.executemany(
+                """
+                INSERT INTO shelters
+                (shelter_id, city_id, name, latitude, longitude, capacity, current_occupancy)
+                VALUES (%(shelter_id)s,%(city_id)s,%(name)s,%(latitude)s,%(longitude)s,%(capacity)s,%(current_occupancy)s)
+                """,
+                shelters,
+            )
+            cursor.executemany(
+                """
+                INSERT INTO infrastructure
+                (infra_id, city_id, zone_id, type, name, latitude, longitude)
+                VALUES (%(infra_id)s,%(city_id)s,%(zone_id)s,%(type)s,%(name)s,%(latitude)s,%(longitude)s)
+                """,
+                infrastructure,
+            )
+            cursor.executemany(
+                """
+                INSERT INTO rainfall_river_history
+                (city_id, date, rainfall_mm, river_level_m, flood_occurred)
+                VALUES (%(city_id)s,%(date)s,%(rainfall_mm)s,%(river_level_m)s,%(flood_occurred)s)
+                """,
+                history,
+            )
+            conn.commit()
+            cursor.close()

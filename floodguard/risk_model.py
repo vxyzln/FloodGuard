@@ -105,17 +105,49 @@ class FloodRiskModel:
             warning = "Rainfall trend easing over the next 1-3 days."
         else:
             warning = "Rainfall trend broadly stable for the next 1-3 days."
-        reasons = []
-        if rainfall_mm > 55:
-            reasons.append("intense rainfall")
-        if river_level_m > 4.0:
-            reasons.append("elevated river level")
+        # Determine descriptive terms avoiding developer jargon
+        if score > 75:
+            risk_desc = "critical"
+        elif score > 45:
+            risk_desc = "elevated"
+        elif score > 20:
+            risk_desc = "moderate"
+        else:
+            risk_desc = "minimal"
+
+        # Rainfall description
+        if rainfall_mm > 75:
+            rain_desc = "heavy rainfall"
+        elif rainfall_mm > 30:
+            rain_desc = "moderate rainfall"
+        else:
+            rain_desc = "low rainfall"
+
+        # River level description
+        if river_level_m > 4.5:
+            river_desc = "high river levels"
+        elif river_level_m > 2.5:
+            river_desc = "moderate river levels"
+        else:
+            river_desc = "low river levels"
+
+        # Elevation description
         if zone["elevation_m"] < 15:
-            reasons.append("low elevation")
+            elev_desc = "low elevation"
+        elif zone["elevation_m"] < 45:
+            elev_desc = "moderate elevation"
+        else:
+            elev_desc = "high elevation"
+
+        # Previous flood activity description
         if zone["historical_flood_frequency"] > 0.5:
-            reasons.append("frequent historical flooding")
-        reason_text = ", ".join(reasons) if reasons else "current rainfall, river level, elevation and historical exposure"
-        explanation = f"Risk is {score:.0f}/100 because {zone['name']} has {reason_text}."
+            freq_desc = "frequent previous flood activity"
+        elif zone["historical_flood_frequency"] > 0.2:
+            freq_desc = "moderate previous flood activity"
+        else:
+            freq_desc = "minimal previous flood activity"
+
+        explanation = f"Flood risk is {risk_desc} due to {rain_desc}, {river_desc}, {elev_desc}, and {freq_desc} in this zone."
         return RiskResult(
             score=score,
             confidence_low=max(0, score - spread),

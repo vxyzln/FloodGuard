@@ -3,13 +3,25 @@ from floodguard.db import mysql_connection
 SCHEMA = [
     "CREATE DATABASE IF NOT EXISTS floodguard CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
     "USE floodguard",
+    "DROP TABLE IF EXISTS simulation_logs",
+    "DROP TABLE IF EXISTS rainfall_river_history",
+    "DROP TABLE IF EXISTS infrastructure",
+    "DROP TABLE IF EXISTS shelters",
+    "DROP TABLE IF EXISTS zones",
+    "DROP TABLE IF EXISTS cities",
     """
     CREATE TABLE IF NOT EXISTS cities (
         city_id INT PRIMARY KEY,
-        name VARCHAR(120) NOT NULL,
+        city VARCHAR(120) NOT NULL UNIQUE,
         state VARCHAR(120) NOT NULL,
         latitude DOUBLE NOT NULL,
         longitude DOUBLE NOT NULL,
+        elevation DOUBLE,
+        temperature DOUBLE,
+        humidity DOUBLE,
+        wind_speed DOUBLE,
+        rainfall DOUBLE,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         map_image_path VARCHAR(255) NOT NULL,
         map_lat_min DOUBLE NOT NULL,
         map_lat_max DOUBLE NOT NULL,
@@ -86,7 +98,7 @@ SCHEMA = [
 
 
 def main() -> None:
-    with mysql_connection(prompt_password=True, include_database=False) as conn:
+    with mysql_connection(prompt_password=False, include_database=False) as conn:
         cursor = conn.cursor()
         for statement in SCHEMA:
             cursor.execute(statement)

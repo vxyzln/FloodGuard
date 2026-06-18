@@ -17,6 +17,7 @@ def db_config(include_database: bool = True, prompt_password: bool = False) -> d
         "port": int(os.getenv("FLOODGUARD_DB_PORT", "3306")),
         "user": os.getenv("FLOODGUARD_DB_USER", "root"),
         "password": password or "",
+        "connection_timeout": 1,
     }
     if include_database:
         config["database"] = os.getenv("FLOODGUARD_DB_NAME", "floodguard")
@@ -47,4 +48,3 @@ def execute(query: str, params: tuple = ()) -> None:
         cursor.execute(query, params)
         conn.commit()
         cursor.close()
-
