@@ -600,7 +600,7 @@ class FloodGuardWindow(QMainWindow):
         river_label = QLabel("River Level Scenario")
         self.reset_scenario_btn = QPushButton("Reset Scenario")
         self.reset_scenario_btn.clicked.connect(self.reset_scenario)
-        self.reset_scenario_btn.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: {PALETTE['text']}; font-weight: bold; padding: 8px 14px; border-radius: 6px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
+        self.reset_scenario_btn.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 8px 14px; border-radius: 6px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
         
         for label in [rain_label, river_label, self.rainfall_value, self.river_value]:
             label.setObjectName("DashboardMeta")
@@ -773,7 +773,7 @@ class FloodGuardWindow(QMainWindow):
         
         self.btn_install_model = QPushButton("Install Model")
         self.btn_install_model.clicked.connect(self.pull_ollama_model)
-        self.btn_install_model.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: {PALETTE['text']}; font-weight: bold; padding: 6px 12px; border-radius: 6px; }}")
+        self.btn_install_model.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 6px 12px; border-radius: 6px; }}")
         self.btn_install_model.hide()
         
         header_layout.addWidget(self.ai_status)
@@ -804,7 +804,7 @@ class FloodGuardWindow(QMainWindow):
         
         self.ai_send = QPushButton("Send")
         self.ai_send.clicked.connect(self.ask_ai)
-        self.ai_send.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: {PALETTE['text']}; font-weight: bold; padding: 12px 24px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
+        self.ai_send.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 12px 24px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
         
         input_row.addWidget(self.ai_input, 1)
         input_row.addWidget(self.ai_send)

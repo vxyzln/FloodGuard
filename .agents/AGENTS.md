@@ -4,7 +4,7 @@ FloodGuard is designed to feel like a professional Emergency Operations Center (
 
 ## Visual Feeling
 - **Do Not Use**: Futuristic sci-fi, neon cyberpunk, gaming UI, student project styling, or analytics toys.
-- **Match the Theme**: Always use the dark slate/panel/teal palette (`background: #0F1B2D`, `panel: #16263D`, `border: #233247`, `accent: #2DD4BF`, `text: #E5E7EB`, `muted: #94A3B8`).
+- **Match the Theme**: Always use the cream/light palette (`background: #F8F6F2`, `panel: #FFFFFF`, `border: #D6D3D1`, `accent: #0F766E`, `text: #111827`, `muted: #6B7280`).
 
 ## Dashboard
 - Dominant operational map, focusing on the current risk, alert level, weather, and responsive priorities.
