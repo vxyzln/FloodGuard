@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -217,6 +218,8 @@ class FloodGuardWindow(QMainWindow):
         self.real_wind_speed = 0.0
         self.scenario_rainfall = 0.0
         self.scenario_river_level = 0.0
+        self.active_model: str | None = None
+        self.ai_messages: list[dict] = []
         app_instance = QApplication.instance()
         if app_instance:
             app_instance.aboutToQuit.connect(self.shutdown_workers)
@@ -761,66 +764,120 @@ class FloodGuardWindow(QMainWindow):
         layout.setSpacing(18)
         
         # Left card for assistant chat
-        chat_card, chat_layout = card("Emergency Planning Assistant")
-        self.ai_status = QLabel("Local AI advisor not checked yet.")
-        self.ai_status.setStyleSheet("font-size: 13px; color: " + PALETTE["muted"] + ";")
+        chat_card, chat_layout = card("FloodGuard AI Advisor")
         
-        self.ai_chat = QTextEdit()
-        self.ai_chat.setReadOnly(True)
-        self.ai_chat.setStyleSheet("background: #FFFFFF; border: 1px solid " + PALETTE["border"] + "; font-family: 'SF Pro Text'; font-size: 14px; padding: 10px; border-radius: 8px;")
+        # Header layout (Status + Action buttons)
+        header_layout = QHBoxLayout()
+        self.ai_status = QLabel("Checking connection...")
+        self.ai_status.setStyleSheet(f"font-size: 13px; color: {PALETTE['muted']}; font-weight: 500;")
+        
+        self.btn_install_model = QPushButton("Install Model")
+        self.btn_install_model.clicked.connect(self.pull_ollama_model)
+        self.btn_install_model.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 6px 12px; border-radius: 6px; }}")
+        self.btn_install_model.hide()
+        
+        header_layout.addWidget(self.ai_status)
+        header_layout.addStretch()
+        header_layout.addWidget(self.btn_install_model)
+        
+        self.ai_chat = QTextBrowser()
+        self.ai_chat.setOpenExternalLinks(True)
+        self.ai_chat.setStyleSheet(f"background: {PALETTE['surface']}; border: 1px solid {PALETTE['border']}; font-family: 'SF Pro Text'; font-size: 14px; padding: 12px; border-radius: 8px;")
+        
+        # Bottom tool row
+        tool_row = QHBoxLayout()
+        self.btn_clear_chat = QPushButton("Clear Conversation")
+        self.btn_clear_chat.clicked.connect(self.clear_chat)
+        self.btn_copy_chat = QPushButton("Copy Response")
+        self.btn_copy_chat.clicked.connect(self.copy_chat)
+        for b in [self.btn_clear_chat, self.btn_copy_chat]:
+            b.setStyleSheet(f"QPushButton {{ background-color: transparent; border: 1px solid {PALETTE['border']}; color: {PALETTE['text']}; padding: 6px 12px; border-radius: 6px; }} QPushButton:hover {{ background-color: {PALETTE['panel']}; }}")
+        tool_row.addWidget(self.btn_clear_chat)
+        tool_row.addStretch()
+        tool_row.addWidget(self.btn_copy_chat)
         
         input_row = QHBoxLayout()
         self.ai_input = QLineEdit()
-        self.ai_input.setPlaceholderText("Query the planning assistant...")
-        self.ai_input.setStyleSheet("font-size: 14px; padding: 10px;")
+        self.ai_input.setPlaceholderText("Query the FloodGuard Operations Assistant...")
+        self.ai_input.setStyleSheet("font-size: 14px; padding: 12px; border-radius: 8px;")
         self.ai_input.returnPressed.connect(self.ask_ai)
         
-        self.ai_send = QPushButton("Send Query")
+        self.ai_send = QPushButton("Send")
         self.ai_send.clicked.connect(self.ask_ai)
-        self.ai_send.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 10px 18px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
+        self.ai_send.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 12px 24px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
         
         input_row.addWidget(self.ai_input, 1)
         input_row.addWidget(self.ai_send)
         
-        chat_layout.addWidget(self.ai_status)
+        chat_layout.addLayout(header_layout)
         chat_layout.addWidget(self.ai_chat, 1)
+        chat_layout.addLayout(tool_row)
         chat_layout.addLayout(input_row)
         
-        # Right card for presets
-        presets_card, presets_layout = card("Command Briefings")
-        presets_layout.setSpacing(14)
+        # Right card for Quick Actions
+        presets_card, presets_layout = card("Quick Actions")
+        presets_layout.setSpacing(12)
         
-        info_lbl = QLabel("Generate automated operational briefings for the EOC command staff:")
-        info_lbl.setObjectName("DashboardMeta")
+        info_lbl = QLabel("Generate operational briefings using live dashboard context:")
         info_lbl.setWordWrap(True)
         info_lbl.setStyleSheet("font-size: 13px; line-height: 1.4;")
         presets_layout.addWidget(info_lbl)
         
-        self.btn_actions = QPushButton("Generate Suggested Actions")
-        self.btn_actions.clicked.connect(lambda: self.ask_ai_preset("actions"))
+        actions = [
+            ("Analyze Current Situation", "actions"),
+            ("Explain Flood Risk", "risk"),
+            ("Generate Public Warning", "warning"),
+            ("Generate Evacuation Plan", "evac"),
+            ("Generate Resource Deployment Plan", "resource"),
+            ("Generate Situation Report", "sitrep")
+        ]
         
-        self.btn_risk = QPushButton("Generate Risk Summary")
-        self.btn_risk.clicked.connect(lambda: self.ask_ai_preset("risk"))
-        
-        self.btn_evac = QPushButton("Generate Evacuation Summary")
-        self.btn_evac.clicked.connect(lambda: self.ask_ai_preset("evac"))
-        
-        for btn in [self.btn_actions, self.btn_risk, self.btn_evac]:
+        for label, tag in actions:
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda checked=False, t=tag: self.ask_ai_preset(t))
             btn.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['panel']}; border: 1px solid {PALETTE['border']}; color: {PALETTE['text']}; text-align: left; padding: 12px 14px; font-weight: 600; font-size: 14px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['surface']}; }}")
             presets_layout.addWidget(btn)
             
         presets_layout.addStretch()
         
-        layout.addWidget(chat_card, 2)
-        layout.addWidget(presets_card, 1)
+        layout.addWidget(chat_card, 5)
+        layout.addWidget(presets_card, 2)
         self.stack.addWidget(page)
         self.check_ollama()
 
+    def clear_chat(self) -> None:
+        self.ai_messages = []
+        self.ai_chat.clear()
+
+    def copy_chat(self) -> None:
+        QApplication.clipboard().setText(self.ai_chat.toPlainText())
+
+    def append_chat_bubble(self, sender: str, message: str, is_user: bool) -> None:
+        timestamp = datetime.now().strftime("%H:%M")
+        bg_color = PALETTE["panel"] if is_user else PALETTE["surface"]
+        align = "right" if is_user else "left"
+        border = f"1px solid {PALETTE['border']}"
+        margin = "margin-left: 20%;" if is_user else "margin-right: 20%;"
+        
+        html = f'''
+        <div align="{align}">
+            <div style="background-color: {bg_color}; border: {border}; border-radius: 8px; padding: 10px; {margin} margin-bottom: 10px; display: inline-block; text-align: left;">
+                <span style="font-weight: bold; color: {PALETTE['accent']};">{sender}</span>
+                <span style="font-size: 11px; color: {PALETTE['muted']}; margin-left: 8px;">{timestamp}</span>
+                <div style="margin-top: 6px; white-space: pre-wrap; font-size: 14px;">{message}</div>
+            </div>
+        </div>
+        '''
+        self.ai_chat.append(html)
+
     def ask_ai_preset(self, preset_type: str) -> None:
         prompts = {
-            "actions": "Draft a list of immediate emergency actions for disaster response teams based on the current city state. Focus on deployment priorities, resource allocation, and warning alerts.",
-            "risk": "Provide a concise operational summary of the current meteorological conditions and flood risk score. Highlight any zones reaching critical risk thresholds.",
-            "evac": "Provide a briefing on the evacuation progress, nearest shelters, required rescue teams, and boats. Detail how shelter occupancy is distributed."
+            "actions": "Analyze the current situation. Output the current risk level, most affected zone, people at risk, primary causes, and recommended immediate actions.",
+            "risk": "Explain the flood risk. Provide the risk score, why the score is high, contributing factors, risk trend, and future concerns.",
+            "warning": "Generate a public warning. Provide an official warning message in simple language, public safe actions, and emergency numbers placeholders.",
+            "evac": "Generate an evacuation plan. Detail the zones to evacuate first, nearest shelters, priority ranking, and suggested route strategy.",
+            "resource": "Generate a resource deployment plan. Outline rescue teams needed, boats needed, medical units needed, and high priority locations.",
+            "sitrep": "Generate a Situation Report formatted as: FLOODGUARD SITUATION REPORT, City, Date & Time, Risk Score, Alert Level, Affected Zones, Critical Infrastructure Status, Shelter Status, Resource Requirements, Recommendations."
         }
         prompt = prompts.get(preset_type, "")
         if not prompt:
@@ -1580,85 +1637,159 @@ class FloodGuardWindow(QMainWindow):
         self.show_screen(1)
 
     def check_ollama(self) -> None:
-        def task() -> bool:
+        def task() -> dict:
             try:
                 response = requests.get("http://localhost:11434/api/tags", timeout=1.5)
+                response.raise_for_status()
+                models = [m.get("name") for m in response.json().get("models", [])]
+                if "qwen2.5:3b" in models:
+                    return {"status": "ok", "model": "qwen2.5:3b"}
+                elif "phi3:mini" in models:
+                    return {"status": "ok", "model": "phi3:mini"}
+                else:
+                    return {"status": "no_model"}
+            except Exception:
+                return {"status": "offline"}
+
+        def success(res: dict) -> None:
+            status = res["status"]
+            if status == "ok":
+                self.active_model = res["model"]
+                self.ai_status.setText("FloodGuard AI Advisor Online")
+                self.btn_install_model.hide()
+                self.ai_send.setEnabled(True)
+                self.ai_input.setEnabled(True)
+            elif status == "no_model":
+                self.ai_status.setText("AI Advisor Offline (Model Missing)")
+                self.ai_send.setEnabled(False)
+                self.ai_input.setEnabled(False)
+                self.btn_install_model.setText("Install Model")
+                self.btn_install_model.show()
+            else:
+                self.ai_status.setText("AI Advisor Offline (Ollama not running)")
+                self.btn_install_model.hide()
+                self.ai_send.setEnabled(False)
+                self.ai_input.setEnabled(False)
+
+        def failed(msg: str) -> None:
+            self.ai_status.setText("AI Advisor Offline")
+            self.btn_install_model.hide()
+            self.ai_send.setEnabled(False)
+            self.ai_input.setEnabled(False)
+
+        self.run_background(task, success, failed)
+
+    def pull_ollama_model(self) -> None:
+        self.btn_install_model.setEnabled(False)
+        self.btn_install_model.setText("Downloading...")
+        self.ai_status.setText("Downloading qwen2.5:3b... (This may take a while)")
+        
+        def task() -> bool:
+            try:
+                response = requests.post("http://localhost:11434/api/pull", json={"name": "qwen2.5:3b"}, timeout=600)
                 response.raise_for_status()
                 return True
             except Exception:
                 return False
-
-        def success(available: bool) -> None:
-            if available:
-                self.ai_status.setText("Local AI advisor available (qwen2.5:3b).")
-                self.ai_send.setEnabled(True)
+                
+        def success(ok: bool) -> None:
+            if ok:
+                self.check_ollama()
             else:
-                self.ai_status.setText("Local AI advisor not available - install Ollama and run qwen2.5:3b to enable this feature.")
-                self.ai_send.setEnabled(False)
+                self.ai_status.setText("Failed to download model.")
+                self.btn_install_model.setEnabled(True)
+                self.btn_install_model.setText("Retry Install")
+                
+        self.run_background(task, success)
 
-        def failed(msg: str) -> None:
-            self.ai_status.setText("Local AI advisor not available - install Ollama to enable this feature.")
-            self.ai_send.setEnabled(False)
-
-        self.run_background(task, success, failed)
-
-    def ask_ai(self) -> None:
-        prompt = self.ai_input.text().strip()
-        if not prompt:
-            return
-        
-        self.ai_chat.append(f"Planner: {prompt}\nAdvisor: [Thinking...]\n")
-        self.ai_input.clear()
-        self.ai_send.setEnabled(False)
-
+    def _build_system_prompt(self) -> str:
+        prompt = (
+            "You are FloodGuard AI Advisor.\n"
+            "You are an expert in: Flood Monitoring, Hydrology, Emergency Management, Disaster Response, Evacuation Planning, Infrastructure Protection, Risk Assessment.\n"
+            "You must answer using the live data provided by FloodGuard.\n"
+            "Always explain decisions using: Rainfall, River Levels, Elevation, Historical Flood Activity, Population Exposure.\n"
+            "Do not mention language models. Do not mention training data. Do not mention AI limitations. Stay focused on flood analysis.\n"
+            "When data is unavailable, state what information is missing. Provide concise operational recommendations.\n\n"
+            "LIVE DASHBOARD DATA:\n"
+        )
+        if not self.current_city:
+            prompt += "No city loaded.\n"
+            return prompt
+            
         city = self.current_city
-        weather_info = f"Weather: Temp {city.get('temperature')} C, Humidity {city.get('humidity')}%, Wind {city.get('wind_speed')} km/h, Rainfall {city.get('rainfall')} mm."
+        weather = f"Temp {self.scenario_temperature if hasattr(self, 'scenario_temperature') else city.get('temperature')} C, Humidity {city.get('humidity')}%, Wind {city.get('wind_speed')} km/h, Rainfall {self.scenario_rainfall} mm."
+        prompt += f"Current City: {city['name']}\n"
+        prompt += f"Current Risk Score: {self.city_result.score:.1f}/100\n"
+        prompt += f"Current Alert Level: {alert_level(self.city_result.score)}\n"
+        
+        if self.zone_results:
+            highest_zone_id = max(self.zone_results.items(), key=lambda x: x[1].score)[0]
+            zone = next((z for z in self.current_zones if z["zone_id"] == highest_zone_id), None)
+            if zone:
+                prompt += f"Highest Risk Zone: {zone['name']}\n"
+                
+        pop_risk = sum(z["population"] for z in self.current_zones if self.zone_scores.get(z["zone_id"], 0) > 50)
+        prompt += f"Population At Risk: {pop_risk}\n"
+        prompt += f"{weather}\n"
+        
+        prompt += f"Historical Flood Data: {len(self.current_history)} recent records available.\n"
         
         evac_summary = ""
         if self.planner:
             plan = self.planner.plan(self.zone_scores)
             for p in plan:
-                evac_summary += (
-                    f"Zone: {p['zone']['name']}, Nearest Shelter: {p['shelter']['name']} ({p['distance_km']:.1f} km), "
-                    f"Evacuation Priority: {alert_level(p['risk'])}, Teams: {p['teams']}, Boats: {p['boats']}. "
-                )
+                evac_summary += f"Zone {p['zone']['name']} -> {p['shelter']['name']} (Priority: {alert_level(p['risk'])}). "
+        prompt += f"Evacuation Priorities: {evac_summary}\n"
         
-        context = (
-            f"City: {city['name']}, State: {city['state']}, Coordinates: {city['latitude']}, {city['longitude']}, Elevation: {city['elevation']} m.\n"
-            f"Flood Risk Score: {self.city_result.score:.1f}/100, Alert Level: {alert_level(self.city_result.score)}.\n"
-            f"{weather_info}\n"
-            f"Evacuation Plan Summary: {evac_summary}\n"
-        )
+        infra_summary = ", ".join([f"{i['name']} ({i['type']})" for i in self.current_infra[:10]])
+        prompt += f"Critical Infrastructure: {infra_summary}\n"
+        
+        return prompt
+
+    def ask_ai(self) -> None:
+        prompt = self.ai_input.text().strip()
+        if not prompt or not self.active_model:
+            return
+        
+        self.append_chat_bubble("Operations Staff", prompt, True)
+        self.ai_input.clear()
+        self.ai_send.setEnabled(False)
+        self.ai_status.setText("Advisor is typing...")
+
+        # Build messages payload
+        system_content = self._build_system_prompt()
+        if not self.ai_messages or self.ai_messages[0].get("role") != "system":
+            self.ai_messages = [{"role": "system", "content": system_content}]
+        else:
+            self.ai_messages[0]["content"] = system_content
+            
+        self.ai_messages.append({"role": "user", "content": prompt})
+
+        payload_messages = list(self.ai_messages)
+        model = self.active_model
 
         def task() -> str:
             try:
                 response = requests.post(
-                    "http://localhost:11434/api/generate",
-                    json={"model": "qwen2.5:3b", "prompt": f"{context}\nUser Question: {prompt}\nProvide emergency advice based on this context.", "stream": False},
-                    timeout=15,
+                    "http://localhost:11434/api/chat",
+                    json={"model": model, "messages": payload_messages, "stream": False},
+                    timeout=45,
                 )
                 response.raise_for_status()
-                return response.json().get("response", "No response.")
+                return response.json().get("message", {}).get("content", "No response.")
             except Exception as e:
-                return f"Local AI advisor unavailable: {str(e)}"
+                return f"Error: {str(e)}"
 
         def success(answer: str) -> None:
             self.ai_send.setEnabled(True)
-            text = self.ai_chat.toPlainText()
-            if "Advisor: [Thinking...]" in text:
-                parts = text.rsplit("Advisor: [Thinking...]", 1)
-                self.ai_chat.setText(parts[0] + f"Advisor: {answer}\n")
-            else:
-                self.ai_chat.append(f"Advisor: {answer}\n")
+            self.ai_status.setText("FloodGuard AI Advisor Online")
+            self.ai_messages.append({"role": "assistant", "content": answer})
+            self.append_chat_bubble("AI Advisor", answer, False)
 
         def failed(msg: str) -> None:
             self.ai_send.setEnabled(True)
-            text = self.ai_chat.toPlainText()
-            if "Advisor: [Thinking...]" in text:
-                parts = text.rsplit("Advisor: [Thinking...]", 1)
-                self.ai_chat.setText(parts[0] + f"Advisor: Local AI advisor unavailable: {msg}\n")
-            else:
-                self.ai_chat.append(f"Advisor: Local AI advisor unavailable: {msg}\n")
+            self.ai_status.setText("FloodGuard AI Advisor Online")
+            self.append_chat_bubble("System", f"Failed to connect to AI Advisor: {msg}", False)
 
         self.run_background(task, success, failed)
 
