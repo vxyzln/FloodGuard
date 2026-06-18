@@ -60,7 +60,7 @@ QFrame#Card {{
 }}
 QPushButton {{
     background: {PALETTE['accent']};
-    color: #FFFFFF;
+    color: {PALETTE['text']};
     border: 0;
     padding: 9px 16px;
     border-radius: 8px;
@@ -75,7 +75,7 @@ QPushButton:disabled {{
     color: {PALETTE['muted']};
 }}
 QComboBox, QLineEdit, QTextEdit {{
-    background: #FFFFFF;
+    background: {PALETTE['surface']};
     border: 1px solid {PALETTE['border']};
     border-radius: 8px;
     padding: 8px;
@@ -350,7 +350,7 @@ class FloodGuardWindow(QMainWindow):
             }}
             QPushButton#OpenDashboard {{
                 background: {PALETTE['accent']};
-                color: #FFFFFF;
+                color: {PALETTE['text']};
                 border: 0;
                 border-radius: 12px;
                 padding: 14px 22px;
@@ -600,7 +600,7 @@ class FloodGuardWindow(QMainWindow):
         river_label = QLabel("River Level Scenario")
         self.reset_scenario_btn = QPushButton("Reset Scenario")
         self.reset_scenario_btn.clicked.connect(self.reset_scenario)
-        self.reset_scenario_btn.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 8px 14px; border-radius: 6px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
+        self.reset_scenario_btn.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: {PALETTE['text']}; font-weight: bold; padding: 8px 14px; border-radius: 6px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
         
         for label in [rain_label, river_label, self.rainfall_value, self.river_value]:
             label.setObjectName("DashboardMeta")
@@ -773,7 +773,7 @@ class FloodGuardWindow(QMainWindow):
         
         self.btn_install_model = QPushButton("Install Model")
         self.btn_install_model.clicked.connect(self.pull_ollama_model)
-        self.btn_install_model.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 6px 12px; border-radius: 6px; }}")
+        self.btn_install_model.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: {PALETTE['text']}; font-weight: bold; padding: 6px 12px; border-radius: 6px; }}")
         self.btn_install_model.hide()
         
         header_layout.addWidget(self.ai_status)
@@ -804,7 +804,7 @@ class FloodGuardWindow(QMainWindow):
         
         self.ai_send = QPushButton("Send")
         self.ai_send.clicked.connect(self.ask_ai)
-        self.ai_send.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 12px 24px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
+        self.ai_send.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: {PALETTE['text']}; font-weight: bold; padding: 12px 24px; border-radius: 8px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
         
         input_row.addWidget(self.ai_input, 1)
         input_row.addWidget(self.ai_send)
@@ -1156,7 +1156,7 @@ class FloodGuardWindow(QMainWindow):
                 zone["latitude"],
                 s=260,
                 color=alert_color(alert_level(score)),
-                edgecolor="#FFFFFF",
+                edgecolor=PALETTE["text"],
                 linewidth=2.4,
                 zorder=3,
             )
@@ -1164,7 +1164,7 @@ class FloodGuardWindow(QMainWindow):
                 zone["longitude"],
                 zone["latitude"],
                 zone["name"].split()[0],
-                color="#FFFFFF",
+                color=PALETTE["text"],
                 fontsize=9,
                 fontweight="bold",
                 ha="center",
@@ -1256,7 +1256,7 @@ class FloodGuardWindow(QMainWindow):
         # 5. Critical infrastructure layer
         if self.layer_infra.isChecked():
             for infra in self.current_infra:
-                ax.scatter(infra["longitude"], infra["latitude"], marker="^", s=130, color="#EF4444", edgecolor="#FFFFFF", linewidth=1.2, zorder=4)
+                ax.scatter(infra["longitude"], infra["latitude"], marker="^", s=130, color="#EF4444", edgecolor=PALETTE["text"], linewidth=1.2, zorder=4)
                 ax.text(infra["longitude"], infra["latitude"] - 0.008, infra["name"], color=PALETTE["text"], fontsize=7, ha="center")
                 
         self.map_canvas.draw_idle()
