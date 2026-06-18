@@ -1,0 +1,2 @@
+"""FloodGuard desktop prototype."""
+

@@ -1,0 +1,10 @@
+pandas
+numpy
+scikit-learn
+joblib
+networkx
+matplotlib
+mysql-connector-python
+requests
+Pillow
+PyQt6
