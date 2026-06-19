@@ -5,31 +5,16 @@ import sys
 import os
 import logging
 import socket
+import numpy as np
+import requests
+import folium
+import folium.plugins
+import matplotlib
 
-os.makedirs("logs", exist_ok=True)
-logging.basicConfig(
-    filename="logs/floodguard.log",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-logger = logging.getLogger("FloodGuard")
-
-def check_internet(host="8.8.8.8", port=53, timeout=3.0) -> bool:
-    try:
-        socket.setdefaulttimeout(timeout)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
-        return True
-    except Exception:
-        return False
-
-def check_api_availability(timeout=1.5) -> bool:
-    try:
-        import requests
-        response = requests.get("https://api.open-meteo.com/v1/forecast", params={"latitude": 0, "longitude": 0}, timeout=timeout)
-        return response.status_code == 200
-    except Exception:
-        return False
+matplotlib.use("QtAgg")
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.image as mpimg
 
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -53,25 +38,11 @@ from PyQt6.QtWidgets import (
     QTextBrowser,
     QVBoxLayout,
     QWidget,
+    QDialog,
 )
 from PyQt6.QtGui import QShortcut, QKeySequence
-
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
-
-class QuietWebEnginePage(QWebEnginePage):
-    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
-        pass
-
-import folium
-import folium.plugins
-import matplotlib
-
-matplotlib.use("QtAgg")
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.image as mpimg
-import requests
 
 from floodguard.config import CACHE_PATH, MODEL_PATH, PALETTE, ROOT
 from floodguard.evacuation import EvacuationPlanner
@@ -82,6 +53,88 @@ from floodguard.city_service import CityService
 from floodguard.weather_service import WeatherService
 from floodguard.cache_service import CacheService
 from floodguard.risk_service import RiskService
+
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    filename="logs/floodguard.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("FloodGuard")
+
+def check_internet(host="8.8.8.8", port=53, timeout=3.0) -> bool:
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except Exception:
+        return False
+
+def check_api_availability(timeout=1.5) -> bool:
+    try:
+        response = requests.get("https://api.open-meteo.com/v1/forecast", params={"latitude": 0, "longitude": 0}, timeout=timeout)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+class ClickableLabel(QLabel):
+    clicked = pyqtSignal()
+    
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+def interpolate_grid(zones, values, lat_min, lat_max, lon_min, lon_max, grid_size=35, power=2.0):
+    if not zones or not values:
+        return []
+        
+    lats = np.linspace(lat_min, lat_max, grid_size)
+    lons = np.linspace(lon_min, lon_max, grid_size)
+    
+    zone_coords = np.array([[float(z["latitude"]), float(z["longitude"])] for z in zones])
+    zone_vals = np.array(values)
+    
+    grid_points = []
+    for lat in lats:
+        for lon in lons:
+            # Compute Euclidean distances to all zones
+            dists = np.sqrt(np.sum((zone_coords - np.array([lat, lon]))**2, axis=1))
+            
+            # Check if we are on top of a zone
+            zero_dist_idx = np.where(dists < 1e-6)[0]
+            if len(zero_dist_idx) > 0:
+                val = zone_vals[zero_dist_idx[0]]
+            else:
+                weights = 1.0 / (dists ** power)
+                val = np.sum(weights * zone_vals) / np.sum(weights)
+                
+            grid_points.append([lat, lon, float(val)])
+    return grid_points
+
+class QuietWebEnginePage(QWebEnginePage):
+    def __init__(self, parent=None, click_handler=None):
+        super().__init__(parent)
+        self.click_handler = click_handler
+
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        pass
+
+    def acceptNavigationRequest(self, url, navigationType, isMainFrame):
+        url_str = url.toString()
+        if url_str.startswith("pyqt://click"):
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(url_str)
+            params = parse_qs(parsed.query)
+            try:
+                lat = float(params.get("lat", [0.0])[0])
+                lng = float(params.get("lng", [0.0])[0])
+                if self.click_handler:
+                    self.click_handler(lat, lng)
+            except Exception as e:
+                logger.error(f"Error handling map click: {e}")
+            return False
+        return True
 
 
 STYLE = f"""
@@ -227,6 +280,126 @@ class BackgroundWorker(QObject):
             self.finished.emit(self.task())
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+from PyQt6.QtWidgets import QDialog
+
+class AlertDetailsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Alert System Information")
+        self.resize(600, 480)
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {PALETTE['background']};
+            }}
+            QLabel {{
+                color: {PALETTE['text']};
+                font-family: 'SF Pro Text', sans-serif;
+            }}
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        
+        title = QLabel("Emergency Alert Protocol")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: " + PALETTE["accent"] + ";")
+        layout.addWidget(title)
+        
+        # 4 Alert Level cards
+        levels = [
+            {
+                "title": "GREEN ALERT",
+                "range": "0–50 Risk Score",
+                "meaning": "Low flood probability.",
+                "action": "Continue monitoring.",
+                "bg": PALETTE["green"],
+                "fg": "#FFFFFF"
+            },
+            {
+                "title": "YELLOW ALERT",
+                "range": "50–70 Risk Score",
+                "meaning": "Potential flooding risk.",
+                "action": "Prepare emergency resources.",
+                "bg": PALETTE["yellow"],
+                "fg": "#111111"
+            },
+            {
+                "title": "ORANGE ALERT",
+                "range": "70–90 Risk Score",
+                "meaning": "High flood probability.",
+                "action": "Prepare evacuation operations.",
+                "bg": PALETTE["orange"],
+                "fg": "#FFFFFF"
+            },
+            {
+                "title": "RED ALERT",
+                "range": "90–100 Risk Score",
+                "meaning": "Severe flood threat.",
+                "action": "Immediate evacuation recommended.",
+                "bg": PALETTE["red"],
+                "fg": "#FFFFFF"
+            }
+        ]
+        
+        for lvl in levels:
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {lvl['bg']};
+                    border-radius: 8px;
+                    border: none;
+                }}
+            """)
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(16, 12, 16, 12)
+            
+            badge_layout = QVBoxLayout()
+            lbl_title = QLabel(lvl["title"])
+            lbl_title.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {lvl['fg']};")
+            lbl_range = QLabel(lvl["range"])
+            lbl_range.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {lvl['fg']}; opacity: 0.85;")
+            badge_layout.addWidget(lbl_title)
+            badge_layout.addWidget(lbl_range)
+            badge_layout.addStretch()
+            
+            info_layout = QVBoxLayout()
+            lbl_meaning = QLabel(f"<b>Meaning:</b> {lvl['meaning']}")
+            lbl_meaning.setStyleSheet(f"font-size: 13px; color: {lvl['fg']};")
+            lbl_action = QLabel(f"<b>Recommended Action:</b> {lvl['action']}")
+            lbl_action.setStyleSheet(f"font-size: 13px; color: {lvl['fg']};")
+            info_layout.addWidget(lbl_meaning)
+            info_layout.addWidget(lbl_action)
+            
+            card_layout.addLayout(badge_layout, 1)
+            card_layout.addLayout(info_layout, 2)
+            layout.addWidget(card)
+            
+        layout.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {PALETTE['accent']};
+                color: white;
+                font-weight: bold;
+                padding: 8px 16px;
+                border-radius: 6px;
+                border: none;
+            }}
+            QPushButton:hover {{
+                background-color: {PALETTE['accent_hover']};
+            }}
+        """)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignRight)
+        
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.accept()
+        else:
+            super().keyPressEvent(event)
 
 
 class FloodGuardWindow(QMainWindow):
@@ -603,10 +776,12 @@ class FloodGuardWindow(QMainWindow):
         top_bar.addWidget(self.dashboard_status)
         layout.addLayout(top_bar)
 
-        self.dashboard_alert_banner = QLabel("")
+        self.dashboard_alert_banner = ClickableLabel("")
+        self.dashboard_alert_banner.setCursor(Qt.CursorShape.PointingHandCursor)
         self.dashboard_alert_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.dashboard_alert_banner.setStyleSheet(f"background: {PALETTE['green']}; color: #FFFFFF; font-family: 'SF Pro Display', 'Helvetica Neue'; font-size: 16px; font-weight: bold; padding: 12px; border-radius: 8px;")
         self.dashboard_alert_banner.setVisible(False)
+        self.dashboard_alert_banner.clicked.connect(self.show_alert_details_dialog)
         layout.addWidget(self.dashboard_alert_banner)
 
         main = QHBoxLayout()
@@ -705,28 +880,62 @@ class FloodGuardWindow(QMainWindow):
         self.rainfall_slider.setRange(-100, 200)
         self.river_slider = QSlider(Qt.Orientation.Horizontal)
         self.river_slider.setRange(-100, 200)
-        self.rainfall_value = QLabel()
-        self.river_value = QLabel()
-        self.rainfall_slider.valueChanged.connect(self.update_from_sliders)
-        self.river_slider.valueChanged.connect(self.update_from_sliders)
+        self.temp_slider = QSlider(Qt.Orientation.Horizontal)
+        self.temp_slider.setRange(-100, 200)
+        self.humidity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.humidity_slider.setRange(-100, 200)
+        self.wind_slider = QSlider(Qt.Orientation.Horizontal)
+        self.wind_slider.setRange(-100, 200)
         
+        self.rainfall_value = QLabel("0%")
+        self.river_value = QLabel("0%")
+        self.temp_value = QLabel("0%")
+        self.humidity_value = QLabel("0%")
+        self.wind_value = QLabel("0%")
+        
+        for slider in [self.rainfall_slider, self.river_slider, self.temp_slider, self.humidity_slider, self.wind_slider]:
+            slider.valueChanged.connect(self.update_from_sliders)
+            
         rain_label = QLabel("Rainfall Scenario")
         river_label = QLabel("River Level Scenario")
+        temp_label_slider = QLabel("Temperature Scenario")
+        humidity_label_slider = QLabel("Humidity Scenario")
+        wind_label_slider = QLabel("Wind Speed Scenario")
+        
         self.reset_scenario_btn = QPushButton("Reset Scenario")
         self.reset_scenario_btn.clicked.connect(self.reset_scenario)
         self.reset_scenario_btn.setStyleSheet(f"QPushButton {{ background-color: {PALETTE['accent']}; color: #FFFFFF; font-weight: bold; padding: 8px 14px; border-radius: 6px; }} QPushButton:hover {{ background-color: {PALETTE['accent_hover']}; }}")
         
-        for label in [rain_label, river_label, self.rainfall_value, self.river_value]:
+        for label in [rain_label, river_label, temp_label_slider, humidity_label_slider, wind_label_slider,
+                      self.rainfall_value, self.river_value, self.temp_value, self.humidity_value, self.wind_value]:
             label.setObjectName("DashboardMeta")
             
         control_layout.addWidget(control_title, 0, 0, 1, 7)
+        
+        # Row 1: Rainfall & River Level
         control_layout.addWidget(rain_label, 1, 0)
         control_layout.addWidget(self.rainfall_slider, 1, 1)
         control_layout.addWidget(self.rainfall_value, 1, 2)
+        
         control_layout.addWidget(river_label, 1, 3)
         control_layout.addWidget(self.river_slider, 1, 4)
         control_layout.addWidget(self.river_value, 1, 5)
-        control_layout.addWidget(self.reset_scenario_btn, 1, 6)
+        
+        # Row 2: Temperature & Humidity
+        control_layout.addWidget(temp_label_slider, 2, 0)
+        control_layout.addWidget(self.temp_slider, 2, 1)
+        control_layout.addWidget(self.temp_value, 2, 2)
+        
+        control_layout.addWidget(humidity_label_slider, 2, 3)
+        control_layout.addWidget(self.humidity_slider, 2, 4)
+        control_layout.addWidget(self.humidity_value, 2, 5)
+        
+        # Row 3: Wind Speed & Reset Button
+        control_layout.addWidget(wind_label_slider, 3, 0)
+        control_layout.addWidget(self.wind_slider, 3, 1)
+        control_layout.addWidget(self.wind_value, 3, 2)
+        
+        control_layout.addWidget(self.reset_scenario_btn, 3, 6)
         
         layout.addWidget(control_card)
         self.stack.addWidget(page)
@@ -752,23 +961,35 @@ class FloodGuardWindow(QMainWindow):
         layout.setSpacing(20)
         
         self.map_view = QWebEngineView()
-        self.map_view.setPage(QuietWebEnginePage(self.map_view))
+        self.map_view.setPage(QuietWebEnginePage(self.map_view, click_handler=self.handle_map_click))
         layout.addWidget(self.map_view, 3)
         
-        side_card, side_layout = card("Layers")
-        side_card.setMinimumWidth(280)
+        side_card, side_layout = card("GIS Layer Control")
+        side_card.setMinimumWidth(300)
         
-        self.layer_infra = QCheckBox("Critical infrastructure")
-        self.layer_population = QCheckBox("Population density")
-        self.layer_river = QCheckBox("River proximity")
-        self.layer_history = QCheckBox("Historical flood extent")
+        self.layer_population = QCheckBox("Population Density")
+        self.layer_risk = QCheckBox("Flood Risk")
+        self.layer_elevation = QCheckBox("Elevation")
+        self.layer_history = QCheckBox("Historical Flood Extent")
+        self.layer_infra = QCheckBox("Critical Infrastructure")
+        self.layer_evac = QCheckBox("Evacuation Points")
         
-        for checkbox in [self.layer_infra, self.layer_population, self.layer_river, self.layer_history]:
-            checkbox.setChecked(checkbox in [self.layer_infra, self.layer_population])
-            checkbox.stateChanged.connect(self.redraw_map)
-            side_layout.addWidget(checkbox)
+        checkboxes = [
+            self.layer_population,
+            self.layer_risk,
+            self.layer_elevation,
+            self.layer_history,
+            self.layer_infra,
+            self.layer_evac
+        ]
+        
+        for cb in checkboxes:
+            # Set default active layers
+            cb.setChecked(cb in [self.layer_population, self.layer_risk, self.layer_infra, self.layer_evac])
+            cb.stateChanged.connect(self.redraw_map)
+            side_layout.addWidget(cb)
             
-        side_layout.addSpacing(20)
+        side_layout.addSpacing(15)
         
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
@@ -778,14 +999,83 @@ class FloodGuardWindow(QMainWindow):
         
         side_layout.addSpacing(10)
         
-        self.zone_detail = QLabel("Click a zone on the map for details.")
-        self.zone_detail.setWordWrap(True)
-        self.zone_detail.setStyleSheet(f"color: {PALETTE['text']}; font-size: 13px; line-height: 1.4;")
-        side_layout.addWidget(self.zone_detail)
+        # Zone details side panel
+        zone_title_label = QLabel("Zone Information")
+        zone_title_label.setStyleSheet("font-family: 'SF Pro Display'; font-size: 16px; font-weight: bold;")
+        side_layout.addWidget(zone_title_label)
+        
+        self.lbl_map_zone_name = QLabel("Zone Name: --")
+        self.lbl_map_zone_risk = QLabel("Risk: --")
+        self.lbl_map_zone_pop = QLabel("Population: --")
+        self.lbl_map_zone_elev = QLabel("Elevation: --")
+        self.lbl_map_zone_hist = QLabel("Hist. Flood Events: --")
+        self.lbl_map_zone_shelter = QLabel("Nearest Shelter: --")
+        
+        self.lbl_map_zone_reco = QLabel("Select a zone or click on the map to view details.")
+        self.lbl_map_zone_reco.setWordWrap(True)
+        self.lbl_map_zone_reco.setStyleSheet("color: #666666; font-size: 13px; line-height: 1.4;")
+        
+        for lbl in [self.lbl_map_zone_name, self.lbl_map_zone_risk, self.lbl_map_zone_pop, 
+                    self.lbl_map_zone_elev, self.lbl_map_zone_hist, self.lbl_map_zone_shelter]:
+            lbl.setStyleSheet("font-size: 13px;")
+            side_layout.addWidget(lbl)
+            
+        side_layout.addSpacing(6)
+        reco_lbl = QLabel("Recommendation:")
+        reco_lbl.setStyleSheet("font-size: 13px; font-weight: bold;")
+        side_layout.addWidget(reco_lbl)
+        side_layout.addWidget(self.lbl_map_zone_reco)
         
         side_layout.addStretch()
         layout.addWidget(side_card, 1)
         self.stack.addWidget(page)
+
+    def handle_map_click(self, lat: float, lng: float) -> None:
+        if not self.current_zones:
+            return
+            
+        def distance(lat1, lon1, lat2, lon2):
+            return ((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5
+            
+        nearest_zone = min(
+            self.current_zones,
+            key=lambda z: distance(lat, lng, float(z["latitude"]), float(z["longitude"]))
+        )
+        
+        nearest_shelter = "None available"
+        if self.current_shelters:
+            sh = min(
+                self.current_shelters,
+                key=lambda s: distance(float(nearest_zone["latitude"]), float(nearest_zone["longitude"]), float(s["latitude"]), float(s["longitude"]))
+            )
+            nearest_shelter = sh["name"]
+            
+        score = self.zone_scores.get(int(nearest_zone["zone_id"]), 0.0)
+        
+        if score < 50.0:
+            reco = "Safe / Low Risk. Continue monitoring weather updates."
+            color = PALETTE["green"]
+        elif score < 70.0:
+            reco = "Moderate Risk. Advise caution in low-lying areas."
+            color = PALETTE["yellow"]
+        elif score < 90.0:
+            reco = "High Risk. Prepare for evacuation and secure emergency supplies."
+            color = PALETTE["orange"]
+        else:
+            reco = "Severe Risk. Evacuate immediately to the nearest shelter."
+            color = PALETTE["red"]
+            
+        self.lbl_map_zone_name.setText(f"<b>Zone Name:</b> {nearest_zone['name']}")
+        self.lbl_map_zone_risk.setText(f"<b>Risk:</b> <font color='{color}'>{score:.1f} / 100</font>")
+        self.lbl_map_zone_pop.setText(f"<b>Population:</b> {int(nearest_zone['population']):,}")
+        self.lbl_map_zone_elev.setText(f"<b>Elevation:</b> {nearest_zone['elevation_m']} m")
+        
+        freq = float(nearest_zone.get("historical_flood_frequency") or 0.0)
+        self.lbl_map_zone_hist.setText(f"<b>Hist. Flood Events:</b> {int(freq * 10)}")
+        self.lbl_map_zone_shelter.setText(f"<b>Nearest Shelter:</b> {nearest_shelter}")
+        
+        self.lbl_map_zone_reco.setText(reco)
+        self.lbl_map_zone_reco.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 600; line-height: 1.4;")
 
     def evac_summary_card(self, title: str) -> tuple[QFrame, QLabel]:
         frame = QFrame()
@@ -1117,13 +1407,14 @@ class FloodGuardWindow(QMainWindow):
             
         self.scenario_rainfall = self.real_rainfall
         self.scenario_river_level = self.real_river_level
+        self.scenario_temperature = self.real_temperature
+        self.scenario_humidity = self.real_humidity
+        self.scenario_wind_speed = self.real_wind_speed
         
-        self.rainfall_slider.blockSignals(True)
-        self.river_slider.blockSignals(True)
-        self.rainfall_slider.setValue(0)
-        self.river_slider.setValue(0)
-        self.rainfall_slider.blockSignals(False)
-        self.river_slider.blockSignals(False)
+        for slider in [self.rainfall_slider, self.river_slider, self.temp_slider, self.humidity_slider, self.wind_slider]:
+            slider.blockSignals(True)
+            slider.setValue(0)
+            slider.blockSignals(False)
 
     def fetch_weather_if_online(self) -> None:
         self.using_cached = False
@@ -1423,6 +1714,9 @@ class FloodGuardWindow(QMainWindow):
             return
         rain_pct = float(self.rainfall_slider.value())
         river_pct = float(self.river_slider.value())
+        temp_pct = float(self.temp_slider.value())
+        humidity_pct = float(self.humidity_slider.value())
+        wind_pct = float(self.wind_slider.value())
         
         if self.real_rainfall > 0.0:
             self.scenario_rainfall = max(0.0, self.real_rainfall * (1.0 + rain_pct / 100.0))
@@ -1433,11 +1727,22 @@ class FloodGuardWindow(QMainWindow):
             self.scenario_river_level = max(0.0, self.real_river_level * (1.0 + river_pct / 100.0))
         else:
             self.scenario_river_level = max(0.0, (river_pct / 100.0) * 5.0) if river_pct > 0 else 0.0
+
+        self.scenario_temperature = max(-10.0, self.real_temperature * (1.0 + temp_pct / 100.0))
+        self.scenario_humidity = min(100.0, max(0.0, self.real_humidity * (1.0 + humidity_pct / 100.0)))
+        self.scenario_wind_speed = max(0.0, self.real_wind_speed * (1.0 + wind_pct / 100.0))
             
         rain_sign = "+" if rain_pct >= 0 else ""
         river_sign = "+" if river_pct >= 0 else ""
+        temp_sign = "+" if temp_pct >= 0 else ""
+        hum_sign = "+" if humidity_pct >= 0 else ""
+        wind_sign = "+" if wind_pct >= 0 else ""
+        
         self.rainfall_value.setText(f"{self.scenario_rainfall:.1f} mm ({rain_sign}{rain_pct:.0f}%)")
         self.river_value.setText(f"{self.scenario_river_level:.1f} m ({river_sign}{river_pct:.0f}%)")
+        self.temp_value.setText(f"{self.scenario_temperature:.1f} °C ({temp_sign}{temp_pct:.0f}%)")
+        self.humidity_value.setText(f"{self.scenario_humidity:.0f}% ({hum_sign}{humidity_pct:.0f}%)")
+        self.wind_value.setText(f"{self.scenario_wind_speed:.1f} km/h ({wind_sign}{wind_pct:.0f}%)")
         
         self.risk_request_id += 1
         request_id = self.risk_request_id
@@ -1451,6 +1756,23 @@ class FloodGuardWindow(QMainWindow):
 
         def task() -> dict:
             res = self.risk_service.score_scenario(self.scenario_rainfall, self.scenario_river_level, zones, history)
+            
+            # Apply adjustments to zone_results and city_result based on weights:
+            # Humidity (Medium weight: 0.10), Temp (Low weight: 0.035), Wind (Low weight: 0.015)
+            adjustment = (humidity_pct * 0.10) + (temp_pct * 0.035) + (wind_pct * 0.015)
+            
+            for zone_id, zone_res in res["zone_results"].items():
+                new_score = min(100.0, max(0.0, zone_res.score + adjustment))
+                zone_res.score = new_score
+                # Recompute low/high confidence based on new score and baseline spread
+                spread = zone_res.confidence_high - zone_res.confidence_low
+                zone_res.confidence_low = max(0.0, new_score - spread/2.0)
+                zone_res.confidence_high = min(100.0, new_score + spread/2.0)
+                
+            # Recompute city score
+            from floodguard.risk_model import city_score
+            res["city_result"] = city_score(res["zone_results"])
+            
             self.cache_service.log_simulation(
                 city_id,
                 self.scenario_rainfall,
@@ -1469,12 +1791,15 @@ class FloodGuardWindow(QMainWindow):
     def reset_scenario(self) -> None:
         self.scenario_rainfall = self.real_rainfall
         self.scenario_river_level = self.real_river_level
-        self.rainfall_slider.blockSignals(True)
-        self.river_slider.blockSignals(True)
-        self.rainfall_slider.setValue(0)
-        self.river_slider.setValue(0)
-        self.rainfall_slider.blockSignals(False)
-        self.river_slider.blockSignals(False)
+        self.scenario_temperature = self.real_temperature
+        self.scenario_humidity = self.real_humidity
+        self.scenario_wind_speed = self.real_wind_speed
+        
+        for slider in [self.rainfall_slider, self.river_slider, self.temp_slider, self.humidity_slider, self.wind_slider]:
+            slider.blockSignals(True)
+            slider.setValue(0)
+            slider.blockSignals(False)
+            
         self.update_from_sliders()
 
     def apply_risk_result(self, payload: dict) -> None:
@@ -1492,6 +1817,10 @@ class FloodGuardWindow(QMainWindow):
             self.redraw_map()
         if self.stack.currentIndex() == 3:
             self.refresh_evacuation()
+
+    def show_alert_details_dialog(self) -> None:
+        dialog = AlertDetailsDialog(self)
+        dialog.exec()
 
     def update_dashboard(self) -> None:
         if not self.current_city:
@@ -1537,12 +1866,10 @@ class FloodGuardWindow(QMainWindow):
             f"background: {color}; color: {badge_text_color}; border-radius: 12px; padding: 10px 14px; "
             'font-family: "SF Pro Display"; font-size: 28px; font-weight: bold;'
         )
-        if level != "Green":
-            self.dashboard_alert_banner.setText(f"{level.upper()} ALERT")
-            self.dashboard_alert_banner.setStyleSheet(f"background: {color}; color: {badge_text_color}; font-family: 'SF Pro Display'; font-size: 16px; font-weight: bold; padding: 12px; border-radius: 8px;")
-            self.dashboard_alert_banner.setVisible(True)
-        else:
-            self.dashboard_alert_banner.setVisible(False)
+        # Always Show Alert Banner
+        self.dashboard_alert_banner.setText(f"{level.upper()} ALERT")
+        self.dashboard_alert_banner.setStyleSheet(f"background: {color}; color: {badge_text_color}; font-family: 'SF Pro Display'; font-size: 16px; font-weight: bold; padding: 12px; border-radius: 8px;")
+        self.dashboard_alert_banner.setVisible(True)
         if self.city_result.score < 50:
             self.highest_zone_label.setText("Low City Risk")
             self.highest_zone_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold; color: ' + PALETTE["green"] + ';')
@@ -1578,19 +1905,23 @@ class FloodGuardWindow(QMainWindow):
             zoom_control=False
         )
         
-        heat_data = []
-        for zone in self.current_zones:
-            score = self.zone_scores.get(int(zone["zone_id"]), 0)
-            if score > 0:
-                heat_data.append([zone["latitude"], zone["longitude"], score / 100.0])
-                
-        if heat_data:
-            folium.plugins.HeatMap(
-                heat_data,
-                radius=35,
-                blur=25,
-                gradient={0.2: 'green', 0.5: 'yellow', 0.8: 'orange', 1.0: 'red'}
-            ).add_to(m)
+        if self.current_zones:
+            lats = [float(z["latitude"]) for z in self.current_zones]
+            lons = [float(z["longitude"]) for z in self.current_zones]
+            lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
+            lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
+            
+            risk_vals = [self.zone_scores.get(int(z["zone_id"]), 0.0) / 100.0 for z in self.current_zones]
+            grid_data = interpolate_grid(self.current_zones, risk_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            
+            if grid_data:
+                folium.plugins.HeatMap(
+                    grid_data,
+                    radius=35,
+                    blur=25,
+                    min_opacity=0.35,
+                    gradient={0.2: 'green', 0.5: 'yellow', 0.8: 'orange', 1.0: 'red'}
+                ).add_to(m)
             
         html = m.get_root().render()
         self.dashboard_map_view.setHtml(html)
@@ -1614,59 +1945,267 @@ class FloodGuardWindow(QMainWindow):
             tiles="CartoDB positron"
         )
         
+        def get_distance(lat1, lon1, lat2, lon2):
+            return ((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5
+
         # 1. Population density layer (Heatmap)
         if self.layer_population.isChecked() and self.current_zones:
-            pop_data = []
-            for zone in self.current_zones:
-                pop_data.append([zone["latitude"], zone["longitude"], float(zone["population"]) / 100000.0])
-            folium.plugins.HeatMap(pop_data, radius=25, blur=15, gradient={0.4: 'blue', 0.65: 'lime', 1: 'red'}).add_to(m)
+            lats = [float(z["latitude"]) for z in self.current_zones]
+            lons = [float(z["longitude"]) for z in self.current_zones]
+            lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
+            lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
             
-        # 2. Historical flood extent layer
+            max_pop = max([float(z["population"]) for z in self.current_zones]) if self.current_zones else 1.0
+            span = max_pop if max_pop > 0 else 1.0
+            pop_vals = [float(z["population"]) / span for z in self.current_zones]
+            grid_data = interpolate_grid(self.current_zones, pop_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            if grid_data:
+                folium.plugins.HeatMap(
+                    grid_data,
+                    radius=35,
+                    blur=25,
+                    min_opacity=0.1,
+                    gradient={0.2: 'yellow', 0.6: 'orange', 1.0: 'red'}
+                ).add_to(m)
+            
+        # 2. Flood Risk heatmap layer
+        if self.layer_risk.isChecked() and self.current_zones:
+            lats = [float(z["latitude"]) for z in self.current_zones]
+            lons = [float(z["longitude"]) for z in self.current_zones]
+            lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
+            lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
+            
+            risk_vals = [self.zone_scores.get(int(z["zone_id"]), 0.0) / 100.0 for z in self.current_zones]
+            grid_data = interpolate_grid(self.current_zones, risk_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            if grid_data:
+                folium.plugins.HeatMap(
+                    grid_data,
+                    radius=35,
+                    blur=25,
+                    min_opacity=0.35,
+                    gradient={0.2: 'green', 0.5: 'yellow', 0.8: 'orange', 1.0: 'red'}
+                ).add_to(m)
+            
+        # 3. Elevation heatmap layer
+        if self.layer_elevation.isChecked() and self.current_zones:
+            lats = [float(z["latitude"]) for z in self.current_zones]
+            lons = [float(z["longitude"]) for z in self.current_zones]
+            lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
+            lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
+            
+            elevations = [float(z["elevation_m"]) for z in self.current_zones]
+            min_elev = min(elevations) if elevations else 0.0
+            max_elev = max(elevations) if elevations else 1.0
+            span = max_elev - min_elev if max_elev > min_elev else 1.0
+            
+            elev_vals = [0.15 + 0.85 * ((max_elev - float(z["elevation_m"])) / span) for z in self.current_zones]
+            grid_data = interpolate_grid(self.current_zones, elev_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            if grid_data:
+                folium.plugins.HeatMap(
+                    grid_data,
+                    radius=35,
+                    blur=25,
+                    min_opacity=0.4,
+                    gradient={0.15: 'green', 0.55: 'orange', 1.0: 'red'}
+                ).add_to(m)
+            
+        # 4. Historical flood extent layer
         if self.layer_history.isChecked() and self.current_zones:
-            hist_data = []
-            for zone in self.current_zones:
-                freq = float(zone.get("historical_flood_frequency", 0))
-                if freq > 0:
-                    hist_data.append([zone["latitude"], zone["longitude"], freq])
-            if hist_data:
-                folium.plugins.HeatMap(hist_data, radius=35, blur=25, gradient={0.4: 'orange', 1: 'darkred'}).add_to(m)
-                
-        # 3. River proximity layer
-        if self.layer_river.isChecked():
-            import numpy as np
-            river_lats = []
-            river_lons = np.linspace(city["map_long_min"], city["map_long_max"], 50)
-            for lon in river_lons:
-                lat = city["latitude"] + (city["map_lat_max"] - city["map_lat_min"]) * 0.15 * np.sin((lon - city["longitude"]) * 40)
-                river_lats.append(lat)
-            river_points = list(zip(river_lats, river_lons))
-            folium.PolyLine(river_points, color="#3B82F6", weight=8, opacity=0.7).add_to(m)
-            folium.PolyLine(river_points, color="#93C5FD", weight=24, opacity=0.3).add_to(m)
+            lats = [float(z["latitude"]) for z in self.current_zones]
+            lons = [float(z["longitude"]) for z in self.current_zones]
+            lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
+            lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
             
-        # 4. Critical infrastructure layer
+            freqs = [float(z.get("historical_flood_frequency") or 0.0) for z in self.current_zones]
+            max_freq = max(freqs) if freqs else 1.0
+            span = max_freq if max_freq > 0 else 1.0
+            
+            freq_vals = [float(z.get("historical_flood_frequency") or 0.0) / span for z in self.current_zones]
+            grid_data = interpolate_grid(self.current_zones, freq_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            if grid_data:
+                folium.plugins.HeatMap(
+                    grid_data,
+                    radius=35,
+                    blur=25,
+                    min_opacity=0.25,
+                    gradient={0.2: '#93C5FD', 0.6: '#3B82F6', 1.0: '#1D4ED8'}
+                ).add_to(m)
+                    
+        # 5. Critical infrastructure layer
         if self.layer_infra.isChecked() and self.current_infra:
             for inf in self.current_infra:
+                zone = next((z for z in self.current_zones if z["zone_id"] == inf["zone_id"]), None)
+                elevation = zone["elevation_m"] if zone else city["elevation"]
+                score = self.zone_scores.get(int(inf["zone_id"]), 0.0) if zone else 0.0
+                risk_lvl = alert_level(score)
+                
+                # Determine status
+                if score >= 90.0:
+                    status = "Critical Alert"
+                elif score >= 70.0:
+                    status = "Under Alert"
+                else:
+                    status = "Operational"
+                    
+                # Setup icons based on type
+                inf_type = inf["type"].lower()
+                if "hospital" in inf_type:
+                    icon_name = "plus"
+                    color = "red"
+                elif "school" in inf_type:
+                    icon_name = "book"
+                    color = "blue"
+                elif "police" in inf_type:
+                    icon_name = "shield"
+                    color = "darkblue"
+                elif "power" in inf_type:
+                    icon_name = "flash"
+                    color = "orange"
+                elif "fire" in inf_type:
+                    icon_name = "fire"
+                    color = "red"
+                elif "water" in inf_type:
+                    icon_name = "tint"
+                    color = "cadetblue"
+                else:
+                    icon_name = "info-sign"
+                    color = "purple"
+                    
+                nearest_s = min(self.current_shelters, key=lambda s: get_distance(float(inf["latitude"]), float(inf["longitude"]), float(s["latitude"]), float(s["longitude"]))) if self.current_shelters else None
+                nearest_s_name = nearest_s["name"] if nearest_s else "None"
+                
+                popup_content = f"""
+                <div style="font-family: 'SF Pro Text', sans-serif; font-size:12px; line-height: 1.4; width: 220px;">
+                    <b>Name:</b> {inf['name']}<br>
+                    <b>Type:</b> {inf['type'].title()}<br>
+                    <b>Elevation:</b> {int(elevation)} m<br>
+                    <b>Risk Level:</b> {risk_lvl}<br>
+                    <b>Nearest Shelter:</b> {nearest_s_name}<br>
+                    <b>Status:</b> {status}
+                </div>
+                """
+                
                 folium.Marker(
                     location=[inf["latitude"], inf["longitude"]],
-                    icon=folium.Icon(color="red", icon="info-sign"),
-                    popup=f"{inf['name']} ({inf['type']})"
+                    icon=folium.Icon(color=color, icon=icon_name),
+                    popup=folium.Popup(popup_content, max_width=250)
                 ).add_to(m)
                 
-        # 5. Draw zones
-        for zone in self.current_zones:
-            score = self.zone_scores.get(int(zone["zone_id"]), 0)
-            color = alert_color(alert_level(score))
-            folium.CircleMarker(
-                location=[zone["latitude"], zone["longitude"]],
-                radius=10,
-                color="#111827",
-                weight=2,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.9,
-                popup=f"<b>{zone['name']}</b><br>Population: {zone['population']}<br>Risk Score: {score:.1f}<br>Elevation: {zone['elevation_m']}m"
-            ).add_to(m)
+        # 6. Evacuation Points layer
+        if self.layer_evac.isChecked() and self.current_shelters:
+            for idx, s in enumerate(self.current_shelters):
+                types = ["Shelter", "Assembly Point", "Emergency Camp", "Rescue Base"]
+                e_type = types[idx % len(types)]
+                
+                nearest_z = min(self.current_zones, key=lambda z: get_distance(float(s["latitude"]), float(s["longitude"]), float(z["latitude"]), float(z["longitude"]))) if self.current_zones else None
+                elevation = nearest_z["elevation_m"] if nearest_z else city["elevation"]
+                score = self.zone_scores.get(int(nearest_z["zone_id"]), 0.0) if nearest_z else 0.0
+                risk_lvl = alert_level(score)
+                
+                status = "Active" if score < 90 else "Inaccessible"
+                
+                if e_type == "Shelter":
+                    color = "green"
+                    icon_name = "home"
+                elif e_type == "Assembly Point":
+                    color = "orange"
+                    icon_name = "flag"
+                elif e_type == "Emergency Camp":
+                    color = "cadetblue"
+                    icon_name = "fire"
+                else:
+                    color = "purple"
+                    icon_name = "star"
+                    
+                nearest_other_s = min([other_s for other_s in self.current_shelters if other_s["shelter_id"] != s["shelter_id"]], key=lambda os: get_distance(float(s["latitude"]), float(s["longitude"]), float(os["latitude"]), float(os["longitude"]))) if len(self.current_shelters) > 1 else None
+                nearest_s_name = nearest_other_s["name"] if nearest_other_s else "N/A (Self)"
+                
+                popup_content = f"""
+                <div style="font-family: 'SF Pro Text', sans-serif; font-size:12px; line-height: 1.4; width: 220px;">
+                    <b>Name:</b> {s['name']}<br>
+                    <b>Type:</b> {e_type}<br>
+                    <b>Elevation:</b> {int(elevation)} m<br>
+                    <b>Risk Level:</b> {risk_lvl}<br>
+                    <b>Nearest Shelter:</b> {nearest_s_name}<br>
+                    <b>Status:</b> {status}
+                </div>
+                """
+                
+                folium.Marker(
+                    location=[s["latitude"], s["longitude"]],
+                    icon=folium.Icon(color=color, icon=icon_name),
+                    popup=folium.Popup(popup_content, max_width=250)
+                ).add_to(m)
+                
+        # Dynamic Legend
+        legend_html = '''
+        <div style="position: fixed; 
+                    bottom: 20px; left: 20px; width: 220px; height: auto; 
+                    background-color: white; border: 2px solid #D6D3D1; z-index:9999; font-size:12px;
+                    padding: 10px; border-radius: 8px; font-family: sans-serif; opacity: 0.95; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <b style="font-size:13px; color:#111827;">Map Legend</b><br>
+        '''
+        
+        has_legend_content = False
+        if self.layer_risk.isChecked():
+            has_legend_content = True
+            legend_html += f'''
+            <div style="margin-top: 6px; color:#111827;">
+                <b>Flood Risk</b><br>
+                <i style="background: {PALETTE['green']}; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Safe<br>
+                <i style="background: {PALETTE['yellow']}; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Moderate<br>
+                <i style="background: {PALETTE['orange']}; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> High<br>
+                <i style="background: {PALETTE['red']}; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Severe<br>
+            </div>
+            '''
             
+        if self.layer_elevation.isChecked():
+            has_legend_content = True
+            legend_html += '''
+            <div style="margin-top: 6px; color:#111827;">
+                <b>Elevation</b><br>
+                <i style="background: green; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> High<br>
+                <i style="background: orange; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Medium<br>
+                <i style="background: red; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Low<br>
+            </div>
+            '''
+            
+        if self.layer_population.isChecked():
+            has_legend_content = True
+            legend_html += '''
+            <div style="margin-top: 6px; color:#111827;">
+                <b>Population Density</b><br>
+                <i style="background: red; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> High Density<br>
+                <i style="background: orange; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Medium Density<br>
+                <i style="background: yellow; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Low Density<br>
+            </div>
+            '''
+            
+        legend_html += '</div>'
+        
+        if has_legend_content:
+            m.get_root().html.add_child(folium.Element(legend_html))
+            
+        # JS click handler script
+        click_js = """
+        <script>
+        function addClickCallback() {
+            var map_elements = document.getElementsByClassName('folium-map');
+            if (map_elements.length > 0) {
+                var map_id = map_elements[0].id;
+                var map_obj = window[map_id];
+                if (map_obj) {
+                    map_obj.on('click', function(e) {
+                        window.location.href = 'pyqt://click?lat=' + e.latlng.lat + '&lng=' + e.latlng.lng;
+                    });
+                }
+            }
+        }
+        setTimeout(addClickCallback, 500);
+        </script>
+        """
+        m.get_root().html.add_child(folium.Element(click_js))
+        
         html = m.get_root().render()
         self.map_view.setHtml(html)
 
