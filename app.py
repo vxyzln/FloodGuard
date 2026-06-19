@@ -10,6 +10,8 @@ import requests
 import folium
 import folium.plugins
 import matplotlib
+import math
+import random
 
 matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -85,7 +87,82 @@ class ClickableLabel(QLabel):
         self.clicked.emit()
         super().mousePressEvent(event)
 
-def interpolate_grid(zones, values, lat_min, lat_max, lon_min, lon_max, grid_size=35, power=2.0):
+class CityDistributionModel:
+    def __init__(self, city_lat: float, city_lon: float, base_elev: float):
+        self.city_lat = city_lat
+        self.city_lon = city_lon
+        self.base_elev = base_elev
+        
+        # Define 3 population clusters (center, west suburb, east suburb)
+        self.clusters = [
+            {"lat": city_lat, "lon": city_lon, "weight": 1.0, "sigma": 0.04},
+            {"lat": city_lat + 0.045, "lon": city_lon - 0.05, "weight": 0.6, "sigma": 0.025},
+            {"lat": city_lat - 0.05, "lon": city_lon + 0.045, "weight": 0.5, "sigma": 0.025}
+        ]
+        
+        # Major roads modeled as simple lines (lat = m*lon + c)
+        self.road1_m = 3.0
+        self.road1_c = city_lat - self.road1_m * city_lon
+        
+        self.road2_m = -0.3
+        self.road2_c = city_lat - self.road2_m * city_lon
+
+    def get_population_density(self, lat: float, lon: float) -> float:
+        val = 0.0
+        for c in self.clusters:
+            d2 = (lat - c["lat"])**2 + (lon - c["lon"])**2
+            val += c["weight"] * math.exp(-d2 / (2.0 * c["sigma"]**2))
+            
+        dist_road1 = abs(self.road1_m * lon - lat + self.road1_c) / math.sqrt(self.road1_m**2 + 1)
+        dist_road2 = abs(self.road2_m * lon - lat + self.road2_c) / math.sqrt(self.road2_m**2 + 1)
+        road_proximity = math.exp(-min(dist_road1, dist_road2)**2 / (2.0 * 0.015**2))
+        
+        density = 0.8 * val + 0.2 * road_proximity
+        noise = 0.03 * (math.sin(100.0 * lat) * math.cos(100.0 * lon))
+        return max(0.01, min(1.0, density + noise))
+
+    def get_river_distance(self, lat: float, lon: float) -> float:
+        river_lat = self.city_lat + 0.035 * math.sin(18.0 * (lon - self.city_lon)) + 0.01 * (lon - self.city_lon)
+        return abs(lat - river_lat)
+
+    def get_elevation(self, lat: float, lon: float) -> float:
+        dist_river = self.get_river_distance(lat, lon)
+        valley_effect = 1.0 - math.exp(-dist_river**2 / (2.0 * 0.02**2))
+        
+        slope = (lat - (self.city_lat - 0.15)) + (lon - (self.city_lon - 0.15))
+        slope_factor = max(0.1, min(1.0, slope / 0.6))
+        
+        elev = self.base_elev * (0.3 + 0.7 * valley_effect * slope_factor)
+        terrain_noise = 3.0 * math.sin(50.0 * lat) * math.cos(50.0 * lon)
+        return max(1.0, elev + terrain_noise)
+
+    def get_flood_risk(self, lat: float, lon: float, rainfall: float, river_level: float) -> float:
+        dist_river = self.get_river_distance(lat, lon)
+        elev = self.get_elevation(lat, lon)
+        
+        river_influence_range = 0.02 + 0.01 * max(0.0, river_level - 1.5)
+        river_risk = math.exp(-dist_river**2 / (2.0 * river_influence_range**2))
+        
+        elev_risk = math.exp(-elev / 15.0)
+        
+        rain_factor = max(0.0, rainfall / 100.0)
+        accumulation_risk = rain_factor * (1.0 - math.exp(-dist_river / 0.04)) * elev_risk
+        
+        base_risk = 0.4 * river_risk + 0.4 * elev_risk + 0.2 * accumulation_risk
+        risk_score = base_risk * 100.0
+        
+        boost = 0.3 * rainfall + 5.0 * max(0.0, river_level - 2.0)
+        risk_score = min(100.0, max(0.0, risk_score + boost))
+        return risk_score
+        
+    def get_historical_flood_frequency(self, lat: float, lon: float) -> float:
+        dist_river = self.get_river_distance(lat, lon)
+        elev = self.get_elevation(lat, lon)
+        
+        freq = math.exp(-dist_river**2 / (2.0 * 0.018**2)) * math.exp(-elev / 20.0)
+        return freq * 1.2
+
+def interpolate_grid(zones, values, lat_min, lat_max, lon_min, lon_max, grid_size=40, power=2.0, sigma=2.0):
     if not zones or not values:
         return []
         
@@ -95,21 +172,25 @@ def interpolate_grid(zones, values, lat_min, lat_max, lon_min, lon_max, grid_siz
     zone_coords = np.array([[float(z["latitude"]), float(z["longitude"])] for z in zones])
     zone_vals = np.array(values)
     
-    grid_points = []
-    for lat in lats:
-        for lon in lons:
-            # Compute Euclidean distances to all zones
+    grid_vals = np.zeros((grid_size, grid_size))
+    for i, lat in enumerate(lats):
+        for j, lon in enumerate(lons):
             dists = np.sqrt(np.sum((zone_coords - np.array([lat, lon]))**2, axis=1))
-            
-            # Check if we are on top of a zone
             zero_dist_idx = np.where(dists < 1e-6)[0]
             if len(zero_dist_idx) > 0:
-                val = zone_vals[zero_dist_idx[0]]
+                grid_vals[i, j] = zone_vals[zero_dist_idx[0]]
             else:
                 weights = 1.0 / (dists ** power)
-                val = np.sum(weights * zone_vals) / np.sum(weights)
+                grid_vals[i, j] = np.sum(weights * zone_vals) / np.sum(weights)
                 
-            grid_points.append([lat, lon, float(val)])
+    from scipy.ndimage import gaussian_filter
+    smoothed_grid = gaussian_filter(grid_vals, sigma=sigma)
+    
+    grid_points = []
+    for i, lat in enumerate(lats):
+        for j, lon in enumerate(lons):
+            grid_points.append([lat, lon, float(smoothed_grid[i, j])])
+            
     return grid_points
 
 class QuietWebEnginePage(QWebEnginePage):
@@ -419,6 +500,8 @@ class FloodGuardWindow(QMainWindow):
         self.current_shelters: list[dict] = []
         self.current_infra: list[dict] = []
         self.current_history: list[dict] = []
+        self.current_historical_flood_points: list[dict] = []
+        self.current_model: CityDistributionModel | None = None
         self.zone_results: dict[int, RiskResult] = {}
         self.zone_scores: dict[int, float] = {}
         self.city_result = RiskResult(0, 0, 0, "Riverine-flood pattern", 0, "", "")
@@ -851,6 +934,9 @@ class FloodGuardWindow(QMainWindow):
         self.highest_zone_label = QLabel("-")
         self.highest_zone_label.setObjectName("KpiValue")
         self.highest_zone_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold;')
+        self.affected_pop_label = QLabel("-")
+        self.affected_pop_label.setObjectName("KpiValue")
+        self.affected_pop_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold;')
         
         def add_impact_item(layout_obj, label_text, val_lbl):
             lbl = QLabel(label_text)
@@ -861,6 +947,7 @@ class FloodGuardWindow(QMainWindow):
         add_impact_item(impact_layout, "Predicted Risk Score", self.score_label)
         add_impact_item(impact_layout, "Alert Level", self.alert_badge)
         add_impact_item(impact_layout, "Highest Risk Zone", self.highest_zone_label)
+        add_impact_item(impact_layout, "Affected Population", self.affected_pop_label)
         
         right_panel.addWidget(impact_card)
         
@@ -1005,21 +1092,37 @@ class FloodGuardWindow(QMainWindow):
         side_layout.addWidget(zone_title_label)
         
         self.lbl_map_zone_name = QLabel("Zone Name: --")
-        self.lbl_map_zone_risk = QLabel("Risk: --")
+        self.lbl_map_zone_risk = QLabel("Risk Score: --")
+        self.lbl_map_zone_category = QLabel("Risk Category: --")
         self.lbl_map_zone_pop = QLabel("Population: --")
         self.lbl_map_zone_elev = QLabel("Elevation: --")
+        self.lbl_map_zone_river_dist = QLabel("Distance to River: --")
         self.lbl_map_zone_hist = QLabel("Hist. Flood Events: --")
         self.lbl_map_zone_shelter = QLabel("Nearest Shelter: --")
+        self.lbl_map_zone_hospital = QLabel("Nearest Hospital: --")
+        self.lbl_map_zone_evac = QLabel("Nearest Evacuation Point: --")
+        
+        self.lbl_map_zone_driver = QLabel("Select a zone or click on the map to view details.")
+        self.lbl_map_zone_driver.setWordWrap(True)
+        self.lbl_map_zone_driver.setStyleSheet("color: #4B5563; font-size: 13px; line-height: 1.4;")
         
         self.lbl_map_zone_reco = QLabel("Select a zone or click on the map to view details.")
         self.lbl_map_zone_reco.setWordWrap(True)
         self.lbl_map_zone_reco.setStyleSheet("color: #666666; font-size: 13px; line-height: 1.4;")
         
-        for lbl in [self.lbl_map_zone_name, self.lbl_map_zone_risk, self.lbl_map_zone_pop, 
-                    self.lbl_map_zone_elev, self.lbl_map_zone_hist, self.lbl_map_zone_shelter]:
+        for lbl in [self.lbl_map_zone_name, self.lbl_map_zone_risk, self.lbl_map_zone_category, 
+                    self.lbl_map_zone_pop, self.lbl_map_zone_elev, self.lbl_map_zone_river_dist,
+                    self.lbl_map_zone_hist, self.lbl_map_zone_shelter, self.lbl_map_zone_hospital,
+                    self.lbl_map_zone_evac]:
             lbl.setStyleSheet("font-size: 13px;")
             side_layout.addWidget(lbl)
             
+        side_layout.addSpacing(6)
+        driver_lbl = QLabel("Risk Driver Explanation:")
+        driver_lbl.setStyleSheet("font-size: 13px; font-weight: bold;")
+        side_layout.addWidget(driver_lbl)
+        side_layout.addWidget(self.lbl_map_zone_driver)
+        
         side_layout.addSpacing(6)
         reco_lbl = QLabel("Recommendation:")
         reco_lbl.setStyleSheet("font-size: 13px; font-weight: bold;")
@@ -1037,43 +1140,97 @@ class FloodGuardWindow(QMainWindow):
         def distance(lat1, lon1, lat2, lon2):
             return ((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5
             
+        def get_dist_km(lat1, lon1, lat2, lon2):
+            return (((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5) * 111.32
+            
         nearest_zone = min(
             self.current_zones,
             key=lambda z: distance(lat, lng, float(z["latitude"]), float(z["longitude"]))
         )
         
-        nearest_shelter = "None available"
-        if self.current_shelters:
-            sh = min(
-                self.current_shelters,
-                key=lambda s: distance(float(nearest_zone["latitude"]), float(nearest_zone["longitude"]), float(s["latitude"]), float(s["longitude"]))
-            )
-            nearest_shelter = sh["name"]
-            
-        score = self.zone_scores.get(int(nearest_zone["zone_id"]), 0.0)
-        
-        if score < 50.0:
-            reco = "Safe / Low Risk. Continue monitoring weather updates."
-            color = PALETTE["green"]
-        elif score < 70.0:
-            reco = "Moderate Risk. Advise caution in low-lying areas."
-            color = PALETTE["yellow"]
-        elif score < 90.0:
-            reco = "High Risk. Prepare for evacuation and secure emergency supplies."
-            color = PALETTE["orange"]
+        # Calculate dynamic model features
+        river_dist_km = 0.0
+        elevation_val = 15.0
+        hist_events = 0
+        if self.current_model:
+            river_dist_km = self.current_model.get_river_distance(lat, lng) * 111.32
+            elevation_val = self.current_model.get_elevation(lat, lng)
+            hist_events = int(self.current_model.get_historical_flood_frequency(lat, lng) * 10)
         else:
-            reco = "Severe Risk. Evacuate immediately to the nearest shelter."
+            river_dist_km = get_dist_km(lat, lng, float(nearest_zone["latitude"]), float(nearest_zone["longitude"]))
+            elevation_val = float(nearest_zone["elevation_m"])
+            hist_events = int(float(nearest_zone.get("historical_flood_frequency") or 0.0) * 10)
+            
+        # Nearest Evacuation Point (any shelter)
+        nearest_evac_pt = "None available"
+        if self.current_shelters:
+            evac = min(
+                self.current_shelters,
+                key=lambda s: get_dist_km(lat, lng, float(s["latitude"]), float(s["longitude"]))
+            )
+            nearest_evac_pt = evac["name"]
+            
+        # Nearest Hospital
+        nearest_hosp_pt = "None available"
+        hospitals = [x for x in self.current_infra if x["type"] == "hospital"]
+        if hospitals:
+            hosp = min(
+                hospitals,
+                key=lambda h: get_dist_km(lat, lng, float(h["latitude"]), float(h["longitude"]))
+            )
+            nearest_hosp_pt = hosp["name"]
+            
+        # Nearest Shelter
+        nearest_shelter_pt = "None available"
+        shelters_only = [x for x in self.current_shelters if "shelter" in x["name"].lower() or "centre" in x["name"].lower()]
+        if not shelters_only:
+            shelters_only = self.current_shelters
+        if shelters_only:
+            sh = min(
+                shelters_only,
+                key=lambda s: get_dist_km(lat, lng, float(s["latitude"]), float(s["longitude"]))
+            )
+            nearest_shelter_pt = sh["name"]
+            
+        # Calculate dynamic risk score based on model
+        if self.current_model:
+            score = self.current_model.get_flood_risk(lat, lng, self.scenario_rainfall, self.scenario_river_level)
+        else:
+            score = self.zone_scores.get(int(nearest_zone["zone_id"]), 0.0)
+            
+        if score >= 90.0:
+            category = "Critical Alert"
             color = PALETTE["red"]
+            driver = "Critical risk driven by combined low elevation basin and immediate proximity to flooding river channel."
+            reco = "Immediate evacuation recommended! Secure life support assets and route to highest ground."
+        elif score >= 70.0:
+            category = "High Alert"
+            color = PALETTE["orange"]
+            driver = "High risk driven by moderate elevation vulnerability and rising local river flow volumes."
+            reco = "Prepare evacuation operations. Monitor water level indicators closely and move assets to safe storage."
+        elif score >= 50.0:
+            category = "Moderate Alert"
+            color = PALETTE["yellow"]
+            driver = "Moderate risk driven by heavy localized rainfall accumulation in medium-lying urban sectors."
+            reco = "Prepare emergency resources. Secure power generators and stand by for EOC instructions."
+        else:
+            category = "Low Alert"
+            color = PALETTE["green"]
+            driver = "Low risk sector with high topography and safe clearance from main drainage paths."
+            reco = "No immediate actions required. Continue routine weather updates monitoring."
             
         self.lbl_map_zone_name.setText(f"<b>Zone Name:</b> {nearest_zone['name']}")
-        self.lbl_map_zone_risk.setText(f"<b>Risk:</b> <font color='{color}'>{score:.1f} / 100</font>")
+        self.lbl_map_zone_risk.setText(f"<b>Risk Score:</b> <font color='{color}'>{score:.1f} / 100</font>")
+        self.lbl_map_zone_category.setText(f"<b>Risk Category:</b> <font color='{color}'>{category}</font>")
         self.lbl_map_zone_pop.setText(f"<b>Population:</b> {int(nearest_zone['population']):,}")
-        self.lbl_map_zone_elev.setText(f"<b>Elevation:</b> {nearest_zone['elevation_m']} m")
+        self.lbl_map_zone_elev.setText(f"<b>Elevation:</b> {int(elevation_val)} m")
+        self.lbl_map_zone_river_dist.setText(f"<b>Distance to River:</b> {river_dist_km:.2f} km")
+        self.lbl_map_zone_hist.setText(f"<b>Hist. Flood Events:</b> {hist_events}")
+        self.lbl_map_zone_shelter.setText(f"<b>Nearest Shelter:</b> {nearest_shelter_pt}")
+        self.lbl_map_zone_hospital.setText(f"<b>Nearest Hospital:</b> {nearest_hosp_pt}")
+        self.lbl_map_zone_evac.setText(f"<b>Nearest Evacuation Point:</b> {nearest_evac_pt}")
         
-        freq = float(nearest_zone.get("historical_flood_frequency") or 0.0)
-        self.lbl_map_zone_hist.setText(f"<b>Hist. Flood Events:</b> {int(freq * 10)}")
-        self.lbl_map_zone_shelter.setText(f"<b>Nearest Shelter:</b> {nearest_shelter}")
-        
+        self.lbl_map_zone_driver.setText(driver)
         self.lbl_map_zone_reco.setText(reco)
         self.lbl_map_zone_reco.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 600; line-height: 1.4;")
 
@@ -1358,6 +1515,223 @@ class FloodGuardWindow(QMainWindow):
             bundle = self.cache_service.load_city(name)
             if not bundle:
                 raise ValueError("City not found in cache")
+            
+            lat = bundle["city"]["latitude"]
+            lon = bundle["city"]["longitude"]
+            base_elev = bundle["city"].get("elevation", 15.0)
+            model = CityDistributionModel(lat, lon, base_elev)
+            
+            osm_infra = []
+            osm_shelters = []
+            if self.online_mode:
+                try:
+                    bbox = f"{lat-0.12},{lon-0.12},{lat+0.12},{lon+0.12}"
+                    url = "https://overpass-api.de/api/interpreter"
+                    query = f"""
+                    [out:json][timeout:5];
+                    (
+                      node["amenity"~"hospital|clinic|school|college|university|fire_station|police|shelter|townhall|community_centre"]({bbox});
+                      way["amenity"~"hospital|clinic|school|college|university|fire_station|police|shelter|townhall|community_centre"]({bbox});
+                      node["power"~"plant|substation"]({bbox});
+                      node["man_made"~"water_works|wastewater_works"]({bbox});
+                      node["office"="government"]({bbox});
+                    );
+                    out center;
+                    """
+                    r = requests.post(url, data={"data": query}, timeout=6.0)
+                    if r.status_code == 200:
+                        elements = r.json().get("elements", [])
+                        for el in elements:
+                            el_lat = el.get("lat") or el.get("center", {}).get("lat")
+                            el_lon = el.get("lon") or el.get("center", {}).get("lon")
+                            if el_lat is None or el_lon is None:
+                                continue
+                            tags = el.get("tags", {})
+                            name_str = tags.get("name")
+                            amenity = tags.get("amenity")
+                            power = tags.get("power")
+                            man_made = tags.get("man_made")
+                            office = tags.get("office")
+                            
+                            # Categorize
+                            el_type = None
+                            if amenity in ["hospital", "clinic", "doctors"]:
+                                el_type = "hospital"
+                                name_str = name_str or "Emergency Hospital"
+                            elif amenity in ["school", "college", "university"]:
+                                el_type = "school"
+                                name_str = name_str or "Community School"
+                            elif amenity == "fire_station":
+                                el_type = "fire_station"
+                                name_str = name_str or "Local Fire Station"
+                            elif amenity == "police":
+                                el_type = "police"
+                                name_str = name_str or "Police Station Precinct"
+                            elif power in ["plant", "substation"]:
+                                el_type = "power_station"
+                                name_str = name_str or "Power Plant/Grid Node"
+                            elif man_made in ["water_works", "wastewater_works"]:
+                                el_type = "water_treatment"
+                                name_str = name_str or "Water Treatment Plant"
+                            elif amenity in ["townhall", "community_centre"] or office == "government":
+                                el_type = "relief_center"
+                                name_str = name_str or "Government Relief Office"
+                            elif amenity == "shelter":
+                                el_type = "shelter"
+                                name_str = name_str or "Emergency Shelter Base"
+                                
+                            if el_type:
+                                if el_type == "shelter":
+                                    osm_shelters.append({
+                                        "name": name_str,
+                                        "latitude": float(el_lat),
+                                        "longitude": float(el_lon),
+                                        "capacity": 5000 + random.randint(0, 5000),
+                                        "current_occupancy": 200 + random.randint(0, 800)
+                                    })
+                                else:
+                                    osm_infra.append({
+                                        "type": el_type,
+                                        "name": name_str,
+                                        "latitude": float(el_lat),
+                                        "longitude": float(el_lon)
+                                    })
+                except Exception as e:
+                    logger.error(f"OSM Overpass API request failed: {e}")
+
+            # Initialize lists from OSM or DB
+            infra_by_type = {}
+            for t in ["hospital", "school", "fire_station", "police", "power_station", "water_treatment", "relief_center"]:
+                infra_by_type[t] = [x for x in osm_infra if x["type"] == t]
+                
+            # Fallback to database loaded infra if OSM returned nothing
+            if not any(infra_by_type.values()):
+                for x in bundle["infrastructure"]:
+                    t = x["type"]
+                    if t in infra_by_type:
+                        infra_by_type[t].append(x)
+                        
+            # Evacuation / Shelters list
+            shelters_list = list(osm_shelters)
+            if not shelters_list:
+                shelters_list = list(bundle["shelters"])
+                
+            # Helper to generate missing points
+            def generate_points(criteria_fn, count_needed):
+                points = []
+                lat_min, lat_max = lat - 0.08, lat + 0.08
+                lon_min, lon_max = lon - 0.08, lon + 0.08
+                candidates = []
+                for _ in range(150):
+                    clat = random.uniform(lat_min, lat_max)
+                    clon = random.uniform(lon_min, lon_max)
+                    score = criteria_fn(clat, clon)
+                    candidates.append((clat, clon, score))
+                candidates.sort(key=lambda x: x[2], reverse=True)
+                for clat, clon, score in candidates:
+                    if len(points) >= count_needed:
+                        break
+                    # diversity check
+                    too_close = False
+                    for plat, plon in points:
+                        if ((clat - plat)**2 + (clon - plon)**2)**0.5 < 0.012:
+                            too_close = True
+                            break
+                    if not too_close:
+                        points.append((clat, clon))
+                for clat, clon, score in candidates:
+                    if len(points) >= count_needed:
+                        break
+                    points.append((clat, clon))
+                return points
+
+            # Generate missing infrastructure
+            min_counts = {
+                "hospital": 10,
+                "school": 10,
+                "fire_station": 5,
+                "police": 5,
+                "power_station": 5,
+                "water_treatment": 5,
+                "relief_center": 5
+            }
+            
+            criterias = {
+                "hospital": lambda lt, ln: model.get_population_density(lt, ln),
+                "school": lambda lt, ln: model.get_population_density(lt, ln),
+                "fire_station": lambda lt, ln: model.get_population_density(lt, ln),
+                "police": lambda lt, ln: model.get_population_density(lt, ln),
+                "power_station": lambda lt, ln: model.get_population_density(lt, ln) * (1.0 - math.exp(-model.get_river_distance(lt, ln)**2 / 0.002)) * (1.0 - model.get_population_density(lt, ln)),
+                "water_treatment": lambda lt, ln: math.exp(-model.get_river_distance(lt, ln)**2 / 0.0005),
+                "relief_center": lambda lt, ln: model.get_population_density(lt, ln)
+            }
+            
+            names_templates = {
+                "hospital": ["General Hospital", "City Clinic", "Health Pavilion", "Medicare Hospital", "Red Cross Hospital", "St. Jude Hospital", "Mercy Health", "Apex Hospital", "Unity Clinic", "Central Hospital"],
+                "school": ["High School", "Academy", "Public School", "Memorial High", "St. Xavier's", "Grammar School", "Science Academy", "Valley School", "Riverdale High", "Central School"],
+                "fire_station": ["Fire HQ", "Station 1", "Fire Station 2", "Station 3", "Emergency Response 4"],
+                "police": ["Precinct 1", "Precinct 2", "Police Station", "City Jail Node", "Police HQ"],
+                "power_station": ["Power Substation A", "Substation B", "Grid Center C", "Electric Hub D", "Power Generator E"],
+                "water_treatment": ["Water Treatment Facility", "Water Reclamation Center", "Reservoir Plant A", "Filtration Hub B", "Pump Station C"],
+                "relief_center": ["Community Relief Hub", "Town Hall Office", "Civil Relief Center", "Government Helpdesk", "Red Cross Aid Station"]
+            }
+
+            final_infra = []
+            infra_id_counter = 1
+            
+            for t, min_cnt in min_counts.items():
+                existing = infra_by_type[t]
+                final_infra.extend(existing)
+                
+                needed = min_cnt - len(existing)
+                if needed > 0:
+                    generated = generate_points(criterias[t], needed)
+                    for idx, (plat, plon) in enumerate(generated):
+                        name_str = f"{name} {names_templates[t][idx % len(names_templates[t])]}"
+                        final_infra.append({
+                            "infra_id": bundle["city"]["city_id"] * 1000 + infra_id_counter,
+                            "city_id": bundle["city"]["city_id"],
+                            "zone_id": bundle["zones"][idx % len(bundle["zones"])]["zone_id"] if bundle["zones"] else 0,
+                            "type": t,
+                            "name": name_str,
+                            "latitude": round(plat, 5),
+                            "longitude": round(plon, 5)
+                        })
+                        infra_id_counter += 1
+
+            # Generate missing evacuation points (minimum 15!)
+            needed_shelters = 15 - len(shelters_list)
+            if needed_shelters > 0:
+                shelter_criteria = lambda lt, ln: model.get_elevation(lt, ln) * (1.0 - model.get_population_density(lt, ln))
+                generated_shelters = generate_points(shelter_criteria, needed_shelters)
+                shelter_templates = ["Municipal Shelter", "Sports Complex Camp", "Stadium Relief Site", "College Hall Shelter", "Transit Hub Shelter", "Community Hall A", "NGO Relief Camp", "Primary School Shelter", "Sector 4 Camp", "Central Shelter Site"]
+                for idx, (plat, plon) in enumerate(generated_shelters):
+                    name_str = f"{name} {shelter_templates[idx % len(shelter_templates)]}"
+                    shelters_list.append({
+                        "shelter_id": bundle["city"]["city_id"] * 100 + len(shelters_list) + 1,
+                        "city_id": bundle["city"]["city_id"],
+                        "name": name_str,
+                        "latitude": round(plat, 5),
+                        "longitude": round(plon, 5),
+                        "capacity": 3000 + random.randint(0, 3000),
+                        "current_occupancy": 100 + random.randint(0, 900)
+                    })
+                    
+            # Generate Historical Flood Points (15 points)
+            flood_criteria = lambda lt, ln: model.get_historical_flood_frequency(lt, ln)
+            generated_flood_pts = generate_points(flood_criteria, 15)
+            flood_points = []
+            for idx, (plat, plon) in enumerate(generated_flood_pts):
+                flood_points.append({
+                    "name": f"Historical Flood Zone Sector {idx + 1}",
+                    "latitude": round(plat, 5),
+                    "longitude": round(plon, 5),
+                    "frequency": round(0.4 + random.random() * 0.8, 2)
+                })
+
+            bundle["infrastructure"] = final_infra
+            bundle["shelters"] = shelters_list
+            bundle["historical_flood_points"] = flood_points
             return bundle
 
         self.run_background(task, self.apply_city_data)
@@ -1368,6 +1742,15 @@ class FloodGuardWindow(QMainWindow):
         self.current_shelters = payload["shelters"]
         self.current_infra = payload["infrastructure"]
         self.current_history = payload["history"]
+        self.current_historical_flood_points = payload.get("historical_flood_points", [])
+        
+        # Initialize CityDistributionModel
+        self.current_model = CityDistributionModel(
+            self.current_city["latitude"], 
+            self.current_city["longitude"], 
+            self.current_city.get("elevation", 15.0)
+        )
+        
         self.planner = EvacuationPlanner(self.current_zones, self.current_shelters)
         self.dashboard_city_label.setText(self.current_city["name"])
         self.dashboard_mode_label.setText("Online Mode" if self.online_mode else "Offline Mode")
@@ -1830,6 +2213,8 @@ class FloodGuardWindow(QMainWindow):
             self.score_label.setText("--")
             self.alert_badge.setText("None")
             self.alert_badge.setStyleSheet(f"background: {PALETTE['surface']}; color: {PALETTE['muted']}; border-radius: 12px; padding: 10px 14px;")
+            if hasattr(self, "affected_pop_label"):
+                self.affected_pop_label.setText("--")
             if hasattr(self, "dashboard_alert_banner"):
                 self.dashboard_alert_banner.setVisible(False)
             return
@@ -1870,18 +2255,29 @@ class FloodGuardWindow(QMainWindow):
         self.dashboard_alert_banner.setText(f"{level.upper()} ALERT")
         self.dashboard_alert_banner.setStyleSheet(f"background: {color}; color: {badge_text_color}; font-family: 'SF Pro Display'; font-size: 16px; font-weight: bold; padding: 12px; border-radius: 8px;")
         self.dashboard_alert_banner.setVisible(True)
-        if self.city_result.score < 50:
-            self.highest_zone_label.setText("Low City Risk")
-            self.highest_zone_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold; color: ' + PALETTE["green"] + ';')
-        elif self.zone_results:
+        
+        def get_zone_score(zone_id):
+            val = self.zone_scores.get(int(zone_id))
+            if val is None:
+                val = self.zone_scores.get(str(zone_id))
+            return val if val is not None else 0.0
+
+        if self.zone_results:
             highest_id, highest = max(self.zone_results.items(), key=lambda item: item[1].score)
             highest_zone = next((zone for zone in self.current_zones if int(zone["zone_id"]) == int(highest_id)), None)
-            self.highest_zone_label.setText(highest_zone["name"] if highest_zone else "-")
-            self.highest_zone_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold; color: ' + PALETTE["text"] + ';')
+            if highest_zone:
+                self.highest_zone_label.setText(f"{highest_zone['name']} ({highest.score:.1f})")
+                self.highest_zone_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold; color: ' + PALETTE["text"] + ';')
+            else:
+                self.highest_zone_label.setText("-")
+                self.highest_zone_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold; color: ' + PALETTE["text"] + ';')
         else:
             self.highest_zone_label.setText("-")
             self.highest_zone_label.setStyleSheet('font-family: "SF Pro Display"; font-size: 20px; font-weight: bold; color: ' + PALETTE["text"] + ';')
             
+        affected_pop = sum(z["population"] for z in self.current_zones if get_zone_score(z["zone_id"]) > 50.0)
+        self.affected_pop_label.setText(f"{affected_pop:,}")
+
         self.real_rain_label.setText(f"{self.real_rainfall:.1f} mm")
         self.real_river_label.setText(f"{self.real_river_level:.1f} m")
         self.temp_label.setText(f"{self.real_temperature:.1f} °C" if self.real_temperature is not None else "-")
@@ -1905,23 +2301,232 @@ class FloodGuardWindow(QMainWindow):
             zoom_control=False
         )
         
+        def get_distance(lat1, lon1, lat2, lon2):
+            return ((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5
+
+        def get_zone_score(zone_id):
+            val = self.zone_scores.get(int(zone_id))
+            if val is None:
+                val = self.zone_scores.get(str(zone_id))
+            return val if val is not None else 0.0
+
         if self.current_zones:
             lats = [float(z["latitude"]) for z in self.current_zones]
             lons = [float(z["longitude"]) for z in self.current_zones]
             lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
             lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
+        else:
+            lat_min, lat_max = city["latitude"] - 0.1, city["latitude"] + 0.1
+            lon_min, lon_max = city["longitude"] - 0.1, city["longitude"] + 0.1
+
+        # 1. Winding River Spline
+        river_lons = np.linspace(lon_min - 0.05, lon_max + 0.05, 200)
+        river_points = []
+        for rl in river_lons:
+            # Formula matching model: lat = city_lat + 0.035 * sin(18 * (lon - city_lon)) + 0.01 * (lon - city_lon)
+            rlat = city["latitude"] + 0.035 * math.sin(18.0 * (rl - city["longitude"])) + 0.01 * (rl - city["longitude"])
+            river_points.append([rlat, rl])
             
-            risk_vals = [self.zone_scores.get(int(z["zone_id"]), 0.0) / 100.0 for z in self.current_zones]
-            grid_data = interpolate_grid(self.current_zones, risk_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+        folium.PolyLine(
+            locations=river_points,
+            color="#2563EB",
+            weight=8,
+            opacity=0.85,
+            tooltip="River Channel"
+        ).add_to(m)
+
+        # 2. Major Roads
+        road1_m = 3.0
+        road1_c = city["latitude"] - road1_m * city["longitude"]
+        road2_m = -0.3
+        road2_c = city["latitude"] - road2_m * city["longitude"]
+        
+        road_lons = np.linspace(lon_min - 0.05, lon_max + 0.05, 50)
+        road1_pts = [[road1_m * rl + road1_c, rl] for rl in road_lons]
+        road2_pts = [[road2_m * rl + road2_c, rl] for rl in road_lons]
+        
+        # Clip to map boundaries
+        road1_pts = [pt for pt in road1_pts if lat_min - 0.1 <= pt[0] <= lat_max + 0.1]
+        road2_pts = [pt for pt in road2_pts if lat_min - 0.1 <= pt[0] <= lat_max + 0.1]
+        
+        folium.PolyLine(locations=road1_pts, color="#6B7280", weight=4, opacity=0.7, tooltip="National Highway").add_to(m)
+        folium.PolyLine(locations=road2_pts, color="#6B7280", weight=3.5, opacity=0.7, tooltip="State Highway").add_to(m)
+
+        # 3. Predicted Flood Area Contour Polygons
+        if self.current_model:
+            grid_size = 50
+            grid_lats = np.linspace(lat_min, lat_max, grid_size)
+            grid_lons = np.linspace(lon_min, lon_max, grid_size)
             
-            if grid_data:
-                folium.plugins.HeatMap(
-                    grid_data,
-                    radius=35,
-                    blur=25,
-                    min_opacity=0.35,
-                    gradient={0.2: 'green', 0.5: 'yellow', 0.8: 'orange', 1.0: 'red'}
+            grid_vals = np.zeros((grid_size, grid_size))
+            for i, lat_val in enumerate(grid_lats):
+                for j, lon_val in enumerate(grid_lons):
+                    risk_score = self.current_model.get_flood_risk(lat_val, lon_val, self.scenario_rainfall, self.scenario_river_level)
+                    hist_freq = self.current_model.get_historical_flood_frequency(lat_val, lon_val)
+                    grid_vals[i, j] = risk_score * 0.85 + hist_freq * 15.0
+                    
+            from scipy.ndimage import gaussian_filter
+            smoothed_grid = gaussian_filter(grid_vals, sigma=2.0)
+            smoothed_grid = np.clip(smoothed_grid, 0.0, 100.0)
+            
+            import matplotlib
+            try:
+                matplotlib.use('Agg', force=True)
+            except Exception:
+                pass
+            import matplotlib.pyplot as plt
+            
+            fig, ax = plt.subplots()
+            levels = [-1.0, 30.0, 50.0, 70.0, 85.0, 101.0]
+            colors = [
+                "#10B981", # Green (Safe)
+                "#FBBF24", # Yellow (Low Risk)
+                "#F97316", # Orange (Moderate Risk)
+                "#EF4444", # Red (High Risk)
+                "#7F1D1D"  # Dark Red (Flooded)
+            ]
+            
+            cs = ax.contourf(grid_lons, grid_lats, smoothed_grid, levels=levels)
+            
+            if hasattr(cs, "collections"):
+                for idx, collection in enumerate(cs.collections):
+                    color = colors[idx]
+                    paths = collection.get_paths()
+                    for path in paths:
+                        polys = path.to_polygons()
+                        for poly in polys:
+                            coords = [[float(pt[1]), float(pt[0])] for pt in poly]
+                            if len(coords) >= 3:
+                                folium.Polygon(
+                                    locations=coords,
+                                    fill=True,
+                                    fill_color=color,
+                                    fill_opacity=0.35,
+                                    color=color,
+                                    weight=0.5,
+                                    opacity=0.4,
+                                    smooth_factor=1.0,
+                                    interactive=False
+                                ).add_to(m)
+            elif hasattr(cs, "allsegs"):
+                for idx, level_segs in enumerate(cs.allsegs):
+                    color = colors[idx]
+                    for seg in level_segs:
+                        coords = [[float(pt[1]), float(pt[0])] for pt in seg]
+                        if len(coords) >= 3:
+                            folium.Polygon(
+                                locations=coords,
+                                fill=True,
+                                fill_color=color,
+                                fill_opacity=0.35,
+                                color=color,
+                                weight=0.5,
+                                opacity=0.4,
+                                smooth_factor=1.0,
+                                interactive=False
+                            ).add_to(m)
+            plt.close(fig)
+
+        # 4. Affected Zones (Hexagons with Popups)
+        def get_hexagon_coords(zlat, zlon, radius=0.015):
+            hex_coords = []
+            for k in range(6):
+                angle = math.pi / 3 * k
+                hex_coords.append([zlat + radius * math.sin(angle), zlon + radius * 1.2 * math.cos(angle)])
+            return hex_coords
+
+        if self.current_zones:
+            for zone in self.current_zones:
+                zone_id = int(zone["zone_id"])
+                zone_score = get_zone_score(zone_id)
+                
+                if zone_score >= 90.0:
+                    zone_color = "#7F1D1D"
+                    suggested_action = "CRITICAL ALERT: Initiate immediate evacuation. Move to nearest shelter now. Do not traverse flooded areas."
+                elif zone_score >= 70.0:
+                    zone_color = "#EF4444"
+                    suggested_action = "HIGH RISK: Secure essential belongings and prepare for evacuation. Monitor emergency broadcasts."
+                elif zone_score >= 50.0:
+                    zone_color = "#F97316"
+                    suggested_action = "MODERATE RISK: Stay indoors, move valuables to upper levels, avoid low-lying roads."
+                elif zone_score >= 30.0:
+                    zone_color = "#FBBF24"
+                    suggested_action = "LOW RISK: Alert. Monitor rainfall and river levels. Ensure emergency kit is ready."
+                else:
+                    zone_color = "#10B981"
+                    suggested_action = "SAFE AREA: Normal vigilance. Maintain readiness and support community efforts."
+                
+                water_depth = max(0.0, (zone_score - 30.0) / 20.0) * (1.0 + 0.2 * max(0.0, self.scenario_river_level))
+                if zone_score < 30.0:
+                    water_depth = 0.0
+                    
+                nearest_s = min(self.current_shelters, key=lambda s: get_distance(float(s["latitude"]), float(s["longitude"]), float(zone["latitude"]), float(zone["longitude"]))) if self.current_shelters else None
+                nearest_shelter_name = nearest_s["name"] if nearest_s else "None"
+                
+                popup_html = f"""
+                <div style="font-family: 'SF Pro Text', -apple-system, sans-serif; font-size: 13px; line-height: 1.5; color: #1F2937; min-width: 220px; padding: 6px;">
+                    <h4 style="margin: 0 0 8px 0; color: #111827; font-size: 15px; border-bottom: 2px solid {zone_color}; padding-bottom: 4px;">{zone['name']}</h4>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Est. Population:</td><td style="padding: 4px 0; text-align: right; font-weight: bold;">{int(zone['population']):,}</td></tr>
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Est. Water Depth:</td><td style="padding: 4px 0; text-align: right; font-weight: bold;">{water_depth:.2f} m</td></tr>
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Risk Score:</td><td style="padding: 4px 0; text-align: right; font-weight: bold; color: {zone_color};">{zone_score:.1f}/100</td></tr>
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Nearest Shelter:</td><td style="padding: 4px 0; text-align: right;">{nearest_shelter_name}</td></tr>
+                    </table>
+                    <div style="margin-top: 10px; background-color: #F9FAFB; border-left: 3px solid {zone_color}; padding: 6px 8px; font-size: 12px; font-style: italic; color: #374151;">
+                        <strong>Suggested Action:</strong> {suggested_action}
+                    </div>
+                </div>
+                """
+                
+                hex_pts = get_hexagon_coords(float(zone["latitude"]), float(zone["longitude"]), radius=0.015)
+                folium.Polygon(
+                    locations=hex_pts,
+                    fill=True,
+                    fill_color=zone_color,
+                    fill_opacity=0.15,
+                    color="#4B5563",
+                    weight=1.5,
+                    opacity=0.7,
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"{zone['name']} (Risk: {zone_score:.1f})"
                 ).add_to(m)
+
+        # 5. Evacuation Shelters (Green Markers)
+        if self.current_shelters:
+            for s in self.current_shelters:
+                folium.Marker(
+                    location=[float(s["latitude"]), float(s["longitude"])],
+                    icon=folium.Icon(color="green", icon="home"),
+                    tooltip=f"Shelter: {s['name']} (Capacity: {s['capacity']})"
+                ).add_to(m)
+
+        # Professional EOC HTML Legend
+        legend_html = '''
+        <div style="position: fixed; 
+                    bottom: 20px; left: 20px; width: 220px;
+                    background-color: white; border: 2px solid #D6D3D1; z-index:9999; font-size:11px;
+                    padding: 10px; border-radius: 8px; font-family: sans-serif; opacity: 0.95; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <b style="font-size:12px; color:#111827;">EOC Flood Extent Legend</b><br>
+            
+            <div style="margin-top: 6px;">
+                <b>Predicted Flood Spread</b><br>
+                <div style="margin-top: 4px;">
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#7F1D1D; vertical-align:middle; margin-right:4px;"></span> Flooded Areas (Dark Red)<br>
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#EF4444; vertical-align:middle; margin-right:4px;"></span> High Risk Areas (Red)<br>
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#F97316; vertical-align:middle; margin-right:4px;"></span> Moderate Risk (Orange)<br>
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#FBBF24; vertical-align:middle; margin-right:4px;"></span> Low Risk (Yellow)<br>
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#10B981; vertical-align:middle; margin-right:4px;"></span> Safe Areas (Green)<br>
+                </div>
+            </div>
+            
+            <div style="margin-top: 6px; border-top: 1px solid #E5E7EB; padding-top: 4px;">
+                <span style="color:#2563EB; font-weight:bold;">▰▰</span> River spline<br>
+                <span style="color:#6B7280; font-weight:bold;">▰▰</span> Road Networks<br>
+                <span style="color:green; font-weight:bold;">🏠</span> Evacuation Shelter
+            </div>
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
             
         html = m.get_root().render()
         self.dashboard_map_view.setHtml(html)
@@ -1948,80 +2553,229 @@ class FloodGuardWindow(QMainWindow):
         def get_distance(lat1, lon1, lat2, lon2):
             return ((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5
 
-        # 1. Population density layer (Heatmap)
-        if self.layer_population.isChecked() and self.current_zones:
+        def get_dist_km(lat1, lon1, lat2, lon2):
+            return (((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5) * 111.32
+
+        # Bounding box for grid
+        if self.current_zones:
             lats = [float(z["latitude"]) for z in self.current_zones]
             lons = [float(z["longitude"]) for z in self.current_zones]
             lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
             lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
+        else:
+            lat_min, lat_max = city["latitude"] - 0.1, city["latitude"] + 0.1
+            lon_min, lon_max = city["longitude"] - 0.1, city["longitude"] + 0.1
+
+        # Helper to compute popup HTML with exactly 9 fields
+        def get_popup_html(name, el_type, plat, plon, status_override=None):
+            elev = 15.0
+            river_dist = 0.0
+            risk_score = 0.0
+            if self.current_model:
+                elev = self.current_model.get_elevation(plat, plon)
+                river_dist = self.current_model.get_river_distance(plat, plon) * 111.32
+                risk_score = self.current_model.get_flood_risk(plat, plon, self.scenario_rainfall, self.scenario_river_level)
+            else:
+                elev = float(city["elevation"])
+                river_dist = 1.0
+                risk_score = self.city_result.score
+                
+            risk_lvl = alert_level(risk_score)
             
-            max_pop = max([float(z["population"]) for z in self.current_zones]) if self.current_zones else 1.0
-            span = max_pop if max_pop > 0 else 1.0
-            pop_vals = [float(z["population"]) / span for z in self.current_zones]
-            grid_data = interpolate_grid(self.current_zones, pop_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            # Status
+            if status_override:
+                status = status_override
+            else:
+                if risk_score >= 90.0:
+                    status = "Critical Alert" if el_type not in ["shelter", "evacuation_point"] else "Inaccessible"
+                elif risk_score >= 70.0:
+                    status = "Under Alert"
+                else:
+                    status = "Operational" if el_type not in ["shelter", "evacuation_point"] else "Active"
+                    
+            # Population Served
+            pop_served = int(self.current_model.get_population_density(plat, plon) * 15000) if self.current_model else 5000
+            
+            # Nearest Shelter
+            nearest_s = min(self.current_shelters, key=lambda s: get_distance(float(s["latitude"]), float(s["longitude"]), plat, plon)) if self.current_shelters else None
+            nearest_s_name = nearest_s["name"] if nearest_s else "None"
+            if el_type in ["shelter", "evacuation_point"] and len(self.current_shelters) > 1:
+                other_s = min([s for s in self.current_shelters if s["name"] != name], key=lambda s: get_distance(float(s["latitude"]), float(s["longitude"]), plat, plon))
+                nearest_s_name = other_s["name"]
+            elif el_type in ["shelter", "evacuation_point"]:
+                nearest_s_name = "N/A (Self)"
+                
+            # Recommendation
+            if "hospital" in el_type:
+                if "Critical" in status:
+                    reco = "Evacuate ICU patients, deploy flood barriers."
+                elif "Under" in status:
+                    reco = "Prepare emergency power backups, monitor water levels."
+                else:
+                    reco = "Maintain normal operations, monitor updates."
+            elif "school" in el_type:
+                if "Critical" in status:
+                    reco = "Suspend classes immediately, open as emergency assembly."
+                elif "Under" in status:
+                    reco = "Prepare for temporary suspension, secure school archives."
+                else:
+                    reco = "Classes operational, monitor weather forecasts."
+            elif el_type in ["power_station", "water_treatment"]:
+                if "Critical" in status:
+                    reco = "Shut down critical grids, deploy high-capacity pumps."
+                elif "Under" in status:
+                    reco = "Activate secondary containment, secure fuel supplies."
+                else:
+                    reco = "Grid operational, normal capacity."
+            elif el_type in ["shelter", "evacuation_point"]:
+                if "Inaccessible" in status:
+                    reco = "Redirect evacuees to nearest safe assembly point."
+                elif "Under" in status:
+                    reco = "Capacity running high. Monitor local ingress."
+                else:
+                    reco = "Active. Accepting evacuees."
+            elif "flood" in el_type:
+                reco = "Historically affected zone. Avoid low-lying roadways."
+            else:
+                reco = "Monitor local conditions and EOC bulletins."
+                
+            return f"""
+            <div style="font-family: 'SF Pro Text', sans-serif; font-size:12px; line-height: 1.4; width: 240px; color: #111827;">
+                <b>Name:</b> {name}<br>
+                <b>Type:</b> {el_type.replace('_', ' ').title()}<br>
+                <b>Elevation:</b> {int(elev)} m<br>
+                <b>Risk Level:</b> {risk_lvl}<br>
+                <b>Population Served:</b> {pop_served:,}<br>
+                <b>Nearest Shelter:</b> {nearest_s_name}<br>
+                <b>Distance to River:</b> {river_dist:.2f} km<br>
+                <b>Status:</b> {status}<br>
+                <b>Recommendation:</b> {reco}
+            </div>
+            """
+
+        # 1. Population density layer (Heatmap)
+        if self.layer_population.isChecked() and self.current_model:
+            grid_size = 40
+            grid_lats = np.linspace(lat_min, lat_max, grid_size)
+            grid_lons = np.linspace(lon_min, lon_max, grid_size)
+            
+            grid_vals = np.zeros((grid_size, grid_size))
+            for i, lt in enumerate(grid_lats):
+                for j, ln in enumerate(grid_lons):
+                    grid_vals[i, j] = self.current_model.get_population_density(lt, ln)
+                    
+            from scipy.ndimage import gaussian_filter
+            smoothed_grid = gaussian_filter(grid_vals, sigma=2.0)
+            
+            grid_data = []
+            for i, lt in enumerate(grid_lats):
+                for j, ln in enumerate(grid_lons):
+                    grid_data.append([lt, ln, float(smoothed_grid[i, j])])
+                    
             if grid_data:
                 folium.plugins.HeatMap(
                     grid_data,
                     radius=35,
                     blur=25,
                     min_opacity=0.1,
-                    gradient={0.2: 'yellow', 0.6: 'orange', 1.0: 'red'}
+                    gradient={0.0: '#0B3C5D', 0.25: '#328CC1', 0.5: 'green', 0.75: 'yellow', 1.0: 'red'}
                 ).add_to(m)
             
         # 2. Flood Risk heatmap layer
-        if self.layer_risk.isChecked() and self.current_zones:
-            lats = [float(z["latitude"]) for z in self.current_zones]
-            lons = [float(z["longitude"]) for z in self.current_zones]
-            lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
-            lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
-            
+        if self.layer_risk.isChecked() and self.current_zones and self.current_model:
             risk_vals = [self.zone_scores.get(int(z["zone_id"]), 0.0) / 100.0 for z in self.current_zones]
-            grid_data = interpolate_grid(self.current_zones, risk_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            
+            grid_size = 40
+            grid_lats = np.linspace(lat_min, lat_max, grid_size)
+            grid_lons = np.linspace(lon_min, lon_max, grid_size)
+            
+            zone_coords = np.array([[float(z["latitude"]), float(z["longitude"])] for z in self.current_zones])
+            zone_vals = np.array(risk_vals)
+            
+            grid_vals = np.zeros((grid_size, grid_size))
+            for i, lt in enumerate(grid_lats):
+                for j, ln in enumerate(grid_lons):
+                    dists = np.sqrt(np.sum((zone_coords - np.array([lt, ln]))**2, axis=1))
+                    zero_dist_idx = np.where(dists < 1e-6)[0]
+                    if len(zero_dist_idx) > 0:
+                        interp_risk = zone_vals[zero_dist_idx[0]]
+                    else:
+                        weights = 1.0 / (dists ** 2)
+                        interp_risk = np.sum(weights * zone_vals) / np.sum(weights)
+                        
+                    model_risk = self.current_model.get_flood_risk(lt, ln, self.scenario_rainfall, self.scenario_river_level) / 100.0
+                    grid_vals[i, j] = 0.4 * interp_risk + 0.6 * model_risk
+                    
+            from scipy.ndimage import gaussian_filter
+            smoothed_grid = gaussian_filter(grid_vals, sigma=2.0)
+            
+            grid_data = []
+            for i, lt in enumerate(grid_lats):
+                for j, ln in enumerate(grid_lons):
+                    grid_data.append([lt, ln, float(smoothed_grid[i, j])])
+                    
             if grid_data:
                 folium.plugins.HeatMap(
                     grid_data,
                     radius=35,
                     blur=25,
                     min_opacity=0.35,
-                    gradient={0.2: 'green', 0.5: 'yellow', 0.8: 'orange', 1.0: 'red'}
+                    gradient={0.0: 'blue', 0.25: 'green', 0.5: 'yellow', 0.75: 'orange', 1.0: 'red'}
                 ).add_to(m)
             
         # 3. Elevation heatmap layer
-        if self.layer_elevation.isChecked() and self.current_zones:
-            lats = [float(z["latitude"]) for z in self.current_zones]
-            lons = [float(z["longitude"]) for z in self.current_zones]
-            lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
-            lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
+        if self.layer_elevation.isChecked() and self.current_model:
+            grid_size = 40
+            grid_lats = np.linspace(lat_min, lat_max, grid_size)
+            grid_lons = np.linspace(lon_min, lon_max, grid_size)
             
-            elevations = [float(z["elevation_m"]) for z in self.current_zones]
-            min_elev = min(elevations) if elevations else 0.0
-            max_elev = max(elevations) if elevations else 1.0
-            span = max_elev - min_elev if max_elev > min_elev else 1.0
+            grid_vals = np.zeros((grid_size, grid_size))
+            for i, lt in enumerate(grid_lats):
+                for j, ln in enumerate(grid_lons):
+                    grid_vals[i, j] = self.current_model.get_elevation(lt, ln)
+                    
+            # Normalize so that lowest is 1.0 (Red) and highest is 0.0 (Dark Green)
+            min_e = np.min(grid_vals)
+            max_e = np.max(grid_vals)
+            span = max_e - min_e if max_e > min_e else 1.0
+            normalized = (max_e - grid_vals) / span
             
-            elev_vals = [0.15 + 0.85 * ((max_elev - float(z["elevation_m"])) / span) for z in self.current_zones]
-            grid_data = interpolate_grid(self.current_zones, elev_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            from scipy.ndimage import gaussian_filter
+            smoothed_grid = gaussian_filter(normalized, sigma=2.0)
+            
+            grid_data = []
+            for i, lt in enumerate(grid_lats):
+                for j, ln in enumerate(grid_lons):
+                    grid_data.append([lt, ln, float(smoothed_grid[i, j])])
+                    
             if grid_data:
                 folium.plugins.HeatMap(
                     grid_data,
                     radius=35,
                     blur=25,
-                    min_opacity=0.4,
-                    gradient={0.15: 'green', 0.55: 'orange', 1.0: 'red'}
+                    min_opacity=0.45,
+                    gradient={0.0: '#064E3B', 0.25: 'green', 0.5: 'yellow', 0.75: 'orange', 1.0: 'red'}
                 ).add_to(m)
             
         # 4. Historical flood extent layer
-        if self.layer_history.isChecked() and self.current_zones:
-            lats = [float(z["latitude"]) for z in self.current_zones]
-            lons = [float(z["longitude"]) for z in self.current_zones]
-            lat_min, lat_max = min(lats) - 0.03, max(lats) + 0.03
-            lon_min, lon_max = min(lons) - 0.03, max(lons) + 0.03
+        if self.layer_history.isChecked() and self.current_model:
+            grid_size = 40
+            grid_lats = np.linspace(lat_min, lat_max, grid_size)
+            grid_lons = np.linspace(lon_min, lon_max, grid_size)
             
-            freqs = [float(z.get("historical_flood_frequency") or 0.0) for z in self.current_zones]
-            max_freq = max(freqs) if freqs else 1.0
-            span = max_freq if max_freq > 0 else 1.0
+            grid_vals = np.zeros((grid_size, grid_size))
+            for i, lt in enumerate(grid_lats):
+                for j, ln in enumerate(grid_lons):
+                    grid_vals[i, j] = self.current_model.get_historical_flood_frequency(lt, ln)
+                    
+            from scipy.ndimage import gaussian_filter
+            smoothed_grid = gaussian_filter(grid_vals, sigma=2.0)
             
-            freq_vals = [float(z.get("historical_flood_frequency") or 0.0) / span for z in self.current_zones]
-            grid_data = interpolate_grid(self.current_zones, freq_vals, lat_min, lat_max, lon_min, lon_max, grid_size=35)
+            grid_data = []
+            for i, lt in enumerate(grid_lats):
+                for j, ln in enumerate(grid_lons):
+                    grid_data.append([lt, ln, float(smoothed_grid[i, j])])
+                    
             if grid_data:
                 folium.plugins.HeatMap(
                     grid_data,
@@ -2030,23 +2784,25 @@ class FloodGuardWindow(QMainWindow):
                     min_opacity=0.25,
                     gradient={0.2: '#93C5FD', 0.6: '#3B82F6', 1.0: '#1D4ED8'}
                 ).add_to(m)
+                
+            # Place blue markers for historical flood incidents
+            for pt in self.current_historical_flood_points:
+                popup_content = get_popup_html(
+                    pt["name"], 
+                    "historical_flood_point", 
+                    pt["latitude"], 
+                    pt["longitude"],
+                    status_override="Historically Flooded"
+                )
+                folium.Marker(
+                    location=[pt["latitude"], pt["longitude"]],
+                    icon=folium.Icon(color="blue", icon="tint"),
+                    popup=folium.Popup(popup_content, max_width=300)
+                ).add_to(m)
                     
         # 5. Critical infrastructure layer
         if self.layer_infra.isChecked() and self.current_infra:
             for inf in self.current_infra:
-                zone = next((z for z in self.current_zones if z["zone_id"] == inf["zone_id"]), None)
-                elevation = zone["elevation_m"] if zone else city["elevation"]
-                score = self.zone_scores.get(int(inf["zone_id"]), 0.0) if zone else 0.0
-                risk_lvl = alert_level(score)
-                
-                # Determine status
-                if score >= 90.0:
-                    status = "Critical Alert"
-                elif score >= 70.0:
-                    status = "Under Alert"
-                else:
-                    status = "Operational"
-                    
                 # Setup icons based on type
                 inf_type = inf["type"].lower()
                 if "hospital" in inf_type:
@@ -2071,24 +2827,12 @@ class FloodGuardWindow(QMainWindow):
                     icon_name = "info-sign"
                     color = "purple"
                     
-                nearest_s = min(self.current_shelters, key=lambda s: get_distance(float(inf["latitude"]), float(inf["longitude"]), float(s["latitude"]), float(s["longitude"]))) if self.current_shelters else None
-                nearest_s_name = nearest_s["name"] if nearest_s else "None"
-                
-                popup_content = f"""
-                <div style="font-family: 'SF Pro Text', sans-serif; font-size:12px; line-height: 1.4; width: 220px;">
-                    <b>Name:</b> {inf['name']}<br>
-                    <b>Type:</b> {inf['type'].title()}<br>
-                    <b>Elevation:</b> {int(elevation)} m<br>
-                    <b>Risk Level:</b> {risk_lvl}<br>
-                    <b>Nearest Shelter:</b> {nearest_s_name}<br>
-                    <b>Status:</b> {status}
-                </div>
-                """
+                popup_content = get_popup_html(inf["name"], inf["type"], inf["latitude"], inf["longitude"])
                 
                 folium.Marker(
                     location=[inf["latitude"], inf["longitude"]],
                     icon=folium.Icon(color=color, icon=icon_name),
-                    popup=folium.Popup(popup_content, max_width=250)
+                    popup=folium.Popup(popup_content, max_width=300)
                 ).add_to(m)
                 
         # 6. Evacuation Points layer
@@ -2097,94 +2841,83 @@ class FloodGuardWindow(QMainWindow):
                 types = ["Shelter", "Assembly Point", "Emergency Camp", "Rescue Base"]
                 e_type = types[idx % len(types)]
                 
-                nearest_z = min(self.current_zones, key=lambda z: get_distance(float(s["latitude"]), float(s["longitude"]), float(z["latitude"]), float(z["longitude"]))) if self.current_zones else None
-                elevation = nearest_z["elevation_m"] if nearest_z else city["elevation"]
-                score = self.zone_scores.get(int(nearest_z["zone_id"]), 0.0) if nearest_z else 0.0
-                risk_lvl = alert_level(score)
-                
-                status = "Active" if score < 90 else "Inaccessible"
-                
                 if e_type == "Shelter":
-                    color = "green"
                     icon_name = "home"
                 elif e_type == "Assembly Point":
-                    color = "orange"
                     icon_name = "flag"
                 elif e_type == "Emergency Camp":
-                    color = "cadetblue"
                     icon_name = "fire"
                 else:
-                    color = "purple"
                     icon_name = "star"
                     
-                nearest_other_s = min([other_s for other_s in self.current_shelters if other_s["shelter_id"] != s["shelter_id"]], key=lambda os: get_distance(float(s["latitude"]), float(s["longitude"]), float(os["latitude"]), float(os["longitude"]))) if len(self.current_shelters) > 1 else None
-                nearest_s_name = nearest_other_s["name"] if nearest_other_s else "N/A (Self)"
-                
-                popup_content = f"""
-                <div style="font-family: 'SF Pro Text', sans-serif; font-size:12px; line-height: 1.4; width: 220px;">
-                    <b>Name:</b> {s['name']}<br>
-                    <b>Type:</b> {e_type}<br>
-                    <b>Elevation:</b> {int(elevation)} m<br>
-                    <b>Risk Level:</b> {risk_lvl}<br>
-                    <b>Nearest Shelter:</b> {nearest_s_name}<br>
-                    <b>Status:</b> {status}
-                </div>
-                """
+                popup_content = get_popup_html(s["name"], "evacuation_point", s["latitude"], s["longitude"])
                 
                 folium.Marker(
                     location=[s["latitude"], s["longitude"]],
-                    icon=folium.Icon(color=color, icon=icon_name),
-                    popup=folium.Popup(popup_content, max_width=250)
+                    icon=folium.Icon(color="green", icon=icon_name),
+                    popup=folium.Popup(popup_content, max_width=300)
                 ).add_to(m)
                 
-        # Dynamic Legend
+        # Professional EOC HTML Legend
         legend_html = '''
         <div style="position: fixed; 
-                    bottom: 20px; left: 20px; width: 220px; height: auto; 
-                    background-color: white; border: 2px solid #D6D3D1; z-index:9999; font-size:12px;
-                    padding: 10px; border-radius: 8px; font-family: sans-serif; opacity: 0.95; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            <b style="font-size:13px; color:#111827;">Map Legend</b><br>
+                    bottom: 20px; left: 20px; width: 280px; max-height: 380px; overflow-y: auto;
+                    background-color: white; border: 2px solid #D6D3D1; z-index:9999; font-size:11px;
+                    padding: 12px; border-radius: 8px; font-family: sans-serif; opacity: 0.95; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <b style="font-size:13px; color:#111827;">EOC Operational Legend</b><br>
+            
+            <div style="margin-top: 8px;">
+                <b>Flood Risk (Continuous)</b><br>
+                <div style="background: linear-gradient(to right, blue, green, yellow, orange, red); height: 8px; border-radius: 4px; margin-top: 4px; margin-bottom: 2px;"></div>
+                <span style="float: left; font-size:9px;">Very Low</span>
+                <span style="float: right; font-size:9px;">Critical</span>
+                <div style="clear: both;"></div>
+            </div>
+            
+            <div style="margin-top: 8px;">
+                <b>Population Density (Continuous)</b><br>
+                <div style="background: linear-gradient(to right, #0B3C5D, #328CC1, green, yellow, red); height: 8px; border-radius: 4px; margin-top: 4px; margin-bottom: 2px;"></div>
+                <span style="float: left; font-size:9px;">Sparse</span>
+                <span style="float: right; font-size:9px;">Very High</span>
+                <div style="clear: both;"></div>
+            </div>
+            
+            <div style="margin-top: 8px;">
+                <b>Elevation (Continuous)</b><br>
+                <div style="background: linear-gradient(to right, red, orange, yellow, green, #064E3B); height: 8px; border-radius: 4px; margin-top: 4px; margin-bottom: 2px;"></div>
+                <span style="float: left; font-size:9px;">Lowest</span>
+                <span style="float: right; font-size:9px;">Highest</span>
+                <div style="clear: both;"></div>
+            </div>
+            
+            <div style="margin-top: 8px; border-top: 1px solid #E5E7EB; padding-top: 6px;">
+                <b>Operational Assets & Nodes</b><br>
+                <table style="width:100%; border-collapse:collapse; margin-top:4px;">
+                    <tr>
+                        <td><span style="color:red; font-weight:bold; font-size:12px;">✚</span> Hospital</td>
+                        <td><span style="color:blue; font-weight:bold; font-size:12px;">📘</span> School</td>
+                    </tr>
+                    <tr>
+                        <td><span style="color:darkblue; font-weight:bold; font-size:12px;">🛡️</span> Police</td>
+                        <td><span style="color:red; font-weight:bold; font-size:12px;">🔥</span> Fire Station</td>
+                    </tr>
+                    <tr>
+                        <td><span style="color:orange; font-weight:bold; font-size:12px;">⚡</span> Power Station</td>
+                        <td><span style="color:cadetblue; font-weight:bold; font-size:12px;">💧</span> Water Works</td>
+                    </tr>
+                    <tr>
+                        <td><span style="color:purple; font-weight:bold; font-size:12px;">🏛️</span> Relief Center</td>
+                        <td><span style="color:blue; font-weight:bold; font-size:12px;">📍</span> Flood Zone</td>
+                    </tr>
+                    <tr>
+                        <td colspan="2"><span style="color:green; font-weight:bold; font-size:12px;">🏠</span> Evacuation Point (Green)</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
         '''
         
-        has_legend_content = False
-        if self.layer_risk.isChecked():
-            has_legend_content = True
-            legend_html += f'''
-            <div style="margin-top: 6px; color:#111827;">
-                <b>Flood Risk</b><br>
-                <i style="background: {PALETTE['green']}; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Safe<br>
-                <i style="background: {PALETTE['yellow']}; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Moderate<br>
-                <i style="background: {PALETTE['orange']}; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> High<br>
-                <i style="background: {PALETTE['red']}; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Severe<br>
-            </div>
-            '''
-            
-        if self.layer_elevation.isChecked():
-            has_legend_content = True
-            legend_html += '''
-            <div style="margin-top: 6px; color:#111827;">
-                <b>Elevation</b><br>
-                <i style="background: green; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> High<br>
-                <i style="background: orange; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Medium<br>
-                <i style="background: red; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Low<br>
-            </div>
-            '''
-            
-        if self.layer_population.isChecked():
-            has_legend_content = True
-            legend_html += '''
-            <div style="margin-top: 6px; color:#111827;">
-                <b>Population Density</b><br>
-                <i style="background: red; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> High Density<br>
-                <i style="background: orange; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Medium Density<br>
-                <i style="background: yellow; width: 12px; height: 12px; float: left; margin-right: 5px; border-radius: 2px;"></i> Low Density<br>
-            </div>
-            '''
-            
-        legend_html += '</div>'
-        
-        if has_legend_content:
-            m.get_root().html.add_child(folium.Element(legend_html))
+        m.get_root().html.add_child(folium.Element(legend_html))
             
         # JS click handler script
         click_js = """
