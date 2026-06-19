@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QDialog,
+    QScrollArea,
 )
 from PyQt6.QtGui import QShortcut, QKeySequence
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -86,6 +87,51 @@ class ClickableLabel(QLabel):
     def mousePressEvent(self, event):
         self.clicked.emit()
         super().mousePressEvent(event)
+
+def make_badge(text: str, bg_color: str, fg_color: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lbl.setStyleSheet(f"""
+        background-color: {bg_color};
+        color: {fg_color};
+        font-weight: bold;
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 11px;
+    """)
+    return lbl
+
+def get_evac_reason(row: dict) -> str:
+    zone = row["zone"]
+    risk = row["risk"]
+    pop = zone["population"]
+    elev = zone.get("elevation_m", 25.0)
+    hist = zone.get("historical_flood_frequency", 0.0)
+    
+    reasons = []
+    if risk > 90:
+        reasons.append("High Flood Risk")
+    elif risk > 70:
+        reasons.append("River Overflow Risk")
+    elif risk > 50:
+        reasons.append("Flood Hazard Runoff")
+        
+    if pop > 7000:
+        reasons.append("Dense Population")
+    elif pop > 4000:
+        reasons.append("Moderate Population")
+        
+    if elev < 12:
+        reasons.append("Low Elevation Zone")
+        
+    if hist > 0.4:
+        reasons.append("Historical Flooding Area")
+    elif hist > 0.2:
+        reasons.append("Flood-Prone History")
+        
+    if not reasons:
+        return "Minor Lowland Elevation Runoff"
+    return " + ".join(reasons[:2])
 
 class CityDistributionModel:
     def __init__(self, city_lat: float, city_lon: float, base_elev: float):
@@ -1250,52 +1296,393 @@ class FloodGuardWindow(QMainWindow):
 
     def build_evacuation(self) -> None:
         page = QWidget()
-        layout = QVBoxLayout(page)
+        page.setStyleSheet(f"""
+            QWidget {{
+                background: {PALETTE['background']};
+                color: {PALETTE['text']};
+                font-family: "SF Pro Text", "Helvetica Neue", sans-serif;
+            }}
+            QFrame#EvacCard {{
+                background: {PALETTE['panel']};
+                border: 1px solid {PALETTE['border']};
+                border-radius: 12px;
+            }}
+            QLabel#SectionTitle {{
+                font-family: "SF Pro Display", "Helvetica Neue";
+                font-size: 18px;
+                font-weight: 700;
+                color: {PALETTE['text']};
+                letter-spacing: 0.5px;
+            }}
+            QLabel#CardTitle {{
+                font-family: "SF Pro Text", "Helvetica Neue";
+                font-size: 13px;
+                color: {PALETTE['muted']};
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 1.2px;
+            }}
+            QLabel#CardValue {{
+                font-family: "SF Mono", "Menlo", monospace;
+                font-size: 30px;
+                font-weight: 700;
+                color: {PALETTE['accent']};
+            }}
+            QLabel#DetailLabel {{
+                font-size: 14px;
+                color: {PALETTE['muted']};
+                font-weight: 500;
+            }}
+            QLabel#DetailValue {{
+                font-size: 14px;
+                font-weight: 600;
+                color: {PALETTE['text']};
+            }}
+            QTableWidget {{
+                background: {PALETTE['panel']};
+                alternate-background-color: {PALETTE['surface']};
+                color: {PALETTE['text']};
+                gridline-color: {PALETTE['border']};
+                border: 1px solid {PALETTE['border']};
+                border-radius: 8px;
+                font-family: "SF Pro Text", "Helvetica Neue", sans-serif;
+            }}
+            QHeaderView::section {{
+                background: {PALETTE['surface']};
+                color: {PALETTE['text']};
+                font-weight: bold;
+                padding: 6px;
+                border: 1px solid {PALETTE['border']};
+            }}
+        """)
+        
+        outer_layout = QVBoxLayout(page)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        
+        # Wrap everything in a QScrollArea to ensure all cards fit beautifully
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+        outer_layout.addWidget(scroll)
+        
+        scroll_content = QWidget()
+        layout = QVBoxLayout(scroll_content)
         layout.setContentsMargins(24, 22, 24, 24)
         layout.setSpacing(18)
+        scroll.setWidget(scroll_content)
         
-        # Summary Row at the top
-        summary_row = QHBoxLayout()
-        summary_row.setSpacing(16)
+        # Title/Header block
+        header_box = QVBoxLayout()
+        header_box.setSpacing(4)
+        title = QLabel("Emergency Evacuation Command Portal")
+        title.setStyleSheet(f"font-family: 'SF Pro Display'; font-size: 26px; font-weight: bold; color: {PALETTE['text']};")
+        subtitle = QLabel("Active Incident Briefing & Safe Routing Operations")
+        subtitle.setStyleSheet(f"font-size: 14px; color: {PALETTE['muted']}; font-weight: 500;")
+        header_box.addWidget(title)
+        header_box.addWidget(subtitle)
+        layout.addLayout(header_box)
         
-        teams_card, self.evac_teams_label = self.evac_summary_card("Teams Required")
-        boats_card, self.evac_boats_label = self.evac_summary_card("Boats Required")
+        # SECTION 1: EMERGENCY RESPONSE OVERVIEW (Command Center Header)
+        overview_box = QFrame()
+        overview_box.setObjectName("EvacCard")
+        overview_layout = QVBoxLayout(overview_box)
+        overview_layout.setContentsMargins(18, 14, 18, 14)
+        overview_layout.setSpacing(8)
+        
+        overview_title = QLabel("EMERGENCY RESPONSE OVERVIEW")
+        overview_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 12px; font-weight: 700; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
+        overview_layout.addWidget(overview_title)
+        
+        kpi_row = QHBoxLayout()
+        kpi_row.setSpacing(12)
+        
+        pop_card, self.evac_pop_at_risk_label = self.evac_summary_card("Total Population At Risk")
         zones_card, self.evac_critical_zones_label = self.evac_summary_card("Critical Risk Zones")
+        teams_card, self.evac_teams_label = self.evac_summary_card("Rescue Teams Needed")
+        boats_card, self.evac_boats_label = self.evac_summary_card("Boats Needed")
+        shelters_card, self.evac_shelters_activated_label = self.evac_summary_card("Shelters Activated")
+        time_card, self.evac_est_time_label = self.evac_summary_card("Estimated Evacuation Time")
         
-        summary_row.addWidget(teams_card)
-        summary_row.addWidget(boats_card)
-        summary_row.addWidget(zones_card)
-        layout.addLayout(summary_row)
+        kpi_row.addWidget(pop_card)
+        kpi_row.addWidget(zones_card)
+        kpi_row.addWidget(teams_card)
+        kpi_row.addWidget(boats_card)
+        kpi_row.addWidget(shelters_card)
+        kpi_row.addWidget(time_card)
+        overview_layout.addLayout(kpi_row)
+        layout.addWidget(overview_box)
         
-        # Grid area below summary
-        grid = QGridLayout()
-        grid.setSpacing(16)
+        # Row 2: Split Dashboard Layout
+        row2 = QHBoxLayout()
+        row2.setSpacing(18)
         
-        plan_card, plan_layout = card("Highest Priority Zones")
-        self.priority_table = QTableWidget(0, 7)
-        self.priority_table.setHorizontalHeaderLabels(["Area", "Risk Score", "Nearest Shelter", "Distance", "Priority", "Teams Required", "Boats Required"])
-        plan_layout.addWidget(self.priority_table, 1)
+        # Left Column (width stretch 4)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(18)
         
-        route_card, route_layout = card("Safe Routes View")
+        # SECTION 3: MOST CRITICAL ZONE Panel
+        crit_card = QFrame()
+        crit_card.setObjectName("EvacCard")
+        crit_layout = QVBoxLayout(crit_card)
+        crit_layout.setContentsMargins(18, 16, 18, 18)
+        crit_layout.setSpacing(12)
+        
+        crit_title = QLabel("MOST CRITICAL ZONE")
+        crit_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["red"]}; letter-spacing: 1.2px;')
+        crit_layout.addWidget(crit_title)
+        
+        self.critical_zone_name = QLabel("-")
+        self.critical_zone_name.setStyleSheet('font-family: "SF Pro Display"; font-size: 24px; font-weight: bold;')
+        crit_layout.addWidget(self.critical_zone_name)
+        
+        # Info grid for details
+        info_grid = QGridLayout()
+        info_grid.setSpacing(10)
+        
+        def add_grid_row(grid_obj, r, label_text, val_lbl):
+            lbl = QLabel(label_text)
+            lbl.setObjectName("DetailLabel")
+            val_lbl.setObjectName("DetailValue")
+            val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            grid_obj.addWidget(lbl, r, 0)
+            grid_obj.addWidget(val_lbl, r, 1)
+            
+        self.critical_zone_pop = QLabel("-")
+        self.critical_zone_risk = QLabel("-")
+        self.critical_zone_shelter = QLabel("-")
+        self.critical_zone_dist = QLabel("-")
+        self.critical_zone_teams = QLabel("-")
+        self.critical_zone_boats = QLabel("-")
+        self.critical_zone_time = QLabel("-")
+        
+        add_grid_row(info_grid, 0, "Population", self.critical_zone_pop)
+        add_grid_row(info_grid, 1, "Risk Score", self.critical_zone_risk)
+        add_grid_row(info_grid, 2, "Nearest Shelter", self.critical_zone_shelter)
+        add_grid_row(info_grid, 3, "Travel Distance", self.critical_zone_dist)
+        add_grid_row(info_grid, 4, "Teams Required", self.critical_zone_teams)
+        add_grid_row(info_grid, 5, "Boats Required", self.critical_zone_boats)
+        add_grid_row(info_grid, 6, "Estimated Evacuation Time", self.critical_zone_time)
+        crit_layout.addLayout(info_grid)
+        
+        # Line separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        sep.setStyleSheet(f"background-color: {PALETTE['border']}; max-height: 1px; border: none;")
+        crit_layout.addWidget(sep)
+        
+        # Recommendation box
+        reco_box = QFrame()
+        reco_box.setStyleSheet(f"background-color: {PALETTE['surface']}; border-radius: 8px; border: 1px solid {PALETTE['border']};")
+        reco_layout = QVBoxLayout(reco_box)
+        reco_layout.setContentsMargins(12, 10, 12, 10)
+        self.critical_zone_reco = QLabel("-")
+        self.critical_zone_reco.setWordWrap(True)
+        self.critical_zone_reco.setStyleSheet("font-size: 13px; font-weight: 500; line-height: 1.4;")
+        reco_layout.addWidget(self.critical_zone_reco)
+        crit_layout.addWidget(reco_box)
+        
+        left_col.addWidget(crit_card)
+        
+        # SECTION 6: RESOURCE DEPLOYMENT (RESOURCE ALLOCATION)
+        res_card = QFrame()
+        res_card.setObjectName("EvacCard")
+        res_layout = QVBoxLayout(res_card)
+        res_layout.setContentsMargins(18, 16, 18, 18)
+        res_layout.setSpacing(12)
+        
+        res_title = QLabel("RESOURCE ALLOCATION")
+        res_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
+        res_layout.addWidget(res_title)
+        
+        res_grid = QGridLayout()
+        res_grid.setSpacing(10)
+        
+        self.res_teams_label = QLabel("0")
+        self.res_boats_label = QLabel("0")
+        self.res_med_label = QLabel("0")
+        self.res_veh_label = QLabel("0")
+        self.res_shelters_label = QLabel("0")
+        
+        add_grid_row(res_grid, 0, "🧑‍🚒 Rescue Teams Assigned", self.res_teams_label)
+        add_grid_row(res_grid, 1, "🛥️ Rescue Boats Assigned", self.res_boats_label)
+        add_grid_row(res_grid, 2, "⚕️ Medical Units Active", self.res_med_label)
+        add_grid_row(res_grid, 3, "🚒 Emergency Vehicles", self.res_veh_label)
+        add_grid_row(res_grid, 4, "🏠 Activated Shelters", self.res_shelters_label)
+        res_layout.addLayout(res_grid)
+        left_col.addWidget(res_card)
+        
+        # SECTION 8: COMMANDER RECOMMENDATION Card
+        comm_card = QFrame()
+        comm_card.setObjectName("EvacCard")
+        comm_layout = QVBoxLayout(comm_card)
+        comm_layout.setContentsMargins(18, 16, 18, 18)
+        comm_layout.setSpacing(12)
+        
+        comm_title = QLabel("COMMANDER RECOMMENDATION")
+        comm_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["accent"]}; letter-spacing: 1.2px;')
+        comm_layout.addWidget(comm_title)
+        
+        self.commander_briefing_label = QLabel("-")
+        self.commander_briefing_label.setWordWrap(True)
+        self.commander_briefing_label.setStyleSheet(f"font-size: 13px; line-height: 1.5; color: {PALETTE['text']};")
+        comm_layout.addWidget(self.commander_briefing_label)
+        left_col.addWidget(comm_card)
+        
+        row2.addLayout(left_col, 4)
+        
+        # Right Column (width stretch 6)
+        right_col = QVBoxLayout()
+        right_col.setSpacing(18)
+        
+        # SECTION 4: SAFE ROUTES VIEW Map Card
+        route_card = QFrame()
+        route_card.setObjectName("EvacCard")
+        route_layout = QVBoxLayout(route_card)
+        route_layout.setContentsMargins(18, 16, 18, 18)
+        route_layout.setSpacing(10)
+        
+        map_header_row = QHBoxLayout()
+        route_title = QLabel("SAFE ROUTES VIEW")
+        route_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
+        map_header_row.addWidget(route_title)
+        map_header_row.addStretch()
+        
+        select_label = QLabel("Highlight route:")
+        select_label.setStyleSheet(f"font-size: 12px; color: {PALETTE['muted']}; font-weight: bold;")
+        self.route_select_combo = QComboBox()
+        self.route_select_combo.setMinimumWidth(180)
+        self.route_select_combo.currentTextChanged.connect(self.on_route_selection_changed)
+        
+        map_header_row.addWidget(select_label)
+        map_header_row.addWidget(self.route_select_combo)
+        route_layout.addLayout(map_header_row)
+        
         self.route_view = QWebEngineView()
+        self.route_view.setMinimumHeight(380)
         self.route_view.setPage(QuietWebEnginePage(self.route_view))
         route_layout.addWidget(self.route_view, 1)
         
-        select_layout = QHBoxLayout()
-        select_label = QLabel("Highlight route for:")
-        select_label.setObjectName("DashboardMeta")
-        self.route_select_combo = QComboBox()
-        self.route_select_combo.currentTextChanged.connect(lambda: self.redraw_routes(self.planner.plan(self.zone_scores) if self.planner else []))
-        select_layout.addWidget(select_label)
-        select_layout.addWidget(self.route_select_combo, 1)
-        route_layout.addLayout(select_layout)
+        # Selected Route Details Card below the map
+        self.route_detail_frame = QFrame()
+        self.route_detail_frame.setStyleSheet(f"background-color: {PALETTE['surface']}; border-radius: 8px; border: 1px solid {PALETTE['border']};")
+        route_detail_layout = QHBoxLayout(self.route_detail_frame)
+        route_detail_layout.setContentsMargins(12, 10, 12, 10)
+        route_detail_layout.setSpacing(16)
         
-        grid.addWidget(plan_card, 0, 0)
-        grid.addWidget(route_card, 0, 1)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        layout.addLayout(grid, 1)
+        self.route_detail_path = QLabel("-")
+        self.route_detail_path.setStyleSheet("font-size: 13px; font-weight: 500;")
+        self.route_detail_dist = QLabel("-")
+        self.route_detail_dist.setStyleSheet("font-size: 13px; font-weight: 600;")
+        self.route_detail_time = QLabel("-")
+        self.route_detail_time.setStyleSheet("font-size: 13px; font-weight: 600;")
+        self.route_detail_safety = QLabel("-")
+        self.route_detail_safety.setStyleSheet("font-size: 13px; font-weight: 700;")
         
+        route_detail_layout.addWidget(self.route_detail_path, 1)
+        route_detail_layout.addWidget(self.route_detail_dist)
+        route_detail_layout.addWidget(self.route_detail_time)
+        route_detail_layout.addWidget(self.route_detail_safety)
+        route_layout.addWidget(self.route_detail_frame)
+        
+        right_col.addWidget(route_card, 1)
+        
+        # SECTION 5 & SECTION 9: WHY THIS ROUTE? & ROUTE SELECTION ENGINE
+        bottom_right_row = QHBoxLayout()
+        bottom_right_row.setSpacing(18)
+        
+        # WHY THIS ROUTE? Card
+        why_card = QFrame()
+        why_card.setObjectName("EvacCard")
+        why_layout = QVBoxLayout(why_card)
+        why_layout.setContentsMargins(18, 16, 18, 18)
+        why_layout.setSpacing(10)
+        why_title = QLabel("WHY THIS ROUTE?")
+        why_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
+        why_layout.addWidget(why_title)
+        why_desc = QLabel(
+            "Selected using Dijkstra shortest-path algorithm.\n\n"
+            "Factors:\n"
+            "• Shortest distance to target shelter\n"
+            "• Active shelter capacity available\n"
+            "• Lowest estimated travel time\n"
+            "• Dynamic avoidance of flooded areas"
+        )
+        why_desc.setWordWrap(True)
+        why_desc.setStyleSheet(f"font-size: 13px; line-height: 1.4; color: {PALETTE['text']};")
+        why_layout.addWidget(why_desc)
+        bottom_right_row.addWidget(why_card, 1)
+        
+        # Route Selection Engine Card (Dijkstra educational)
+        dijk_card = QFrame()
+        dijk_card.setObjectName("EvacCard")
+        dijk_layout = QVBoxLayout(dijk_card)
+        dijk_layout.setContentsMargins(18, 16, 18, 18)
+        dijk_layout.setSpacing(10)
+        dijk_title = QLabel("ROUTE SELECTION ENGINE")
+        dijk_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
+        dijk_layout.addWidget(dijk_title)
+        dijk_desc = QLabel(
+            "FloodGuard uses NetworkX and Dijkstra's shortest-path algorithm to identify the safest evacuation route between flood-prone zones and available shelters."
+        )
+        dijk_desc.setWordWrap(True)
+        dijk_desc.setStyleSheet(f"font-size: 13px; line-height: 1.4; color: {PALETTE['text']};")
+        dijk_layout.addWidget(dijk_desc)
+        
+        dijk_flow = QLabel(
+            "<b>Input:</b> Zone Location<br>"
+            "<b>Process:</b> Shortest Path Calculation<br>"
+            "<b>Output:</b> Recommended Evacuation Route"
+        )
+        dijk_flow.setStyleSheet(f"font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; color: {PALETTE['accent']}; line-height: 1.4;")
+        dijk_layout.addWidget(dijk_flow)
+        bottom_right_row.addWidget(dijk_card, 1)
+        
+        right_col.addLayout(bottom_right_row)
+        row2.addLayout(right_col, 6)
+        layout.addLayout(row2)
+        
+        # Row 3: Split Tables Layout
+        row3 = QHBoxLayout()
+        row3.setSpacing(18)
+        
+        # Left: PRIORITY TABLE Card (Section 2)
+        table_card = QFrame()
+        table_card.setObjectName("EvacCard")
+        table_card_layout = QVBoxLayout(table_card)
+        table_card_layout.setContentsMargins(18, 16, 18, 18)
+        table_card_layout.setSpacing(12)
+        
+        table_title = QLabel("HIGHEST PRIORITY ZONES")
+        table_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
+        table_card_layout.addWidget(table_title)
+        
+        self.priority_table = QTableWidget(0, 8)
+        self.priority_table.setMinimumHeight(280)
+        self.priority_table.setHorizontalHeaderLabels(["Rank", "Area", "Risk Level", "Population", "Nearest Shelter", "Travel Distance", "Evacuation Priority", "Reason"])
+        table_card_layout.addWidget(self.priority_table, 1)
+        row3.addWidget(table_card, 6)
+        
+        # Right: SHELTER COMMAND BOARD Card (Section 7)
+        shelter_card = QFrame()
+        shelter_card.setObjectName("EvacCard")
+        shelter_card_layout = QVBoxLayout(shelter_card)
+        shelter_card_layout.setContentsMargins(18, 16, 18, 18)
+        shelter_card_layout.setSpacing(12)
+        
+        shelter_title = QLabel("SHELTER COMMAND BOARD")
+        shelter_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
+        shelter_card_layout.addWidget(shelter_title)
+        
+        self.shelter_table = QTableWidget(0, 5)
+        self.shelter_table.setMinimumHeight(280)
+        self.shelter_table.setHorizontalHeaderLabels(["Shelter Name", "Capacity", "Occupied", "Available", "Status"])
+        shelter_card_layout.addWidget(self.shelter_table, 1)
+        row3.addWidget(shelter_card, 4)
+        
+        layout.addLayout(row3)
         self.stack.addWidget(page)
 
     def build_trends(self) -> None:
@@ -3017,40 +3404,160 @@ class FloodGuardWindow(QMainWindow):
             return
         plan = self.planner.plan(self.zone_scores)
         
-        # Populate Summary Card Labels
+        # Populate Summary Card Labels (EMERGENCY RESPONSE OVERVIEW)
         total_teams = sum(row['teams'] for row in plan)
         total_boats = sum(row['boats'] for row in plan)
         critical_zones = sum(1 for row in plan if row['priority_score'] > 100000)
+        total_pop_at_risk = sum(row['zone']['population'] for row in plan if row['risk'] > 50)
+        shelters_activated = len(set(row['shelter']['shelter_id'] for row in plan))
+        total_evac_time_hours = max([ (row["distance_km"] * 8.0 + (row["zone"]["population"] / 800.0) * 6.0) / 60.0 for row in plan ]) if plan else 0.0
         
+        self.evac_pop_at_risk_label.setText(f"{total_pop_at_risk:,}")
+        self.evac_critical_zones_label.setText(str(critical_zones))
         self.evac_teams_label.setText(str(total_teams))
         self.evac_boats_label.setText(str(total_boats))
-        self.evac_critical_zones_label.setText(str(critical_zones))
+        self.evac_shelters_activated_label.setText(str(shelters_activated))
+        self.evac_est_time_label.setText(f"{total_evac_time_hours:.1f} hrs")
         
+        # Populate MOST CRITICAL ZONE Panel
+        if plan:
+            top_row = plan[0]
+            self.critical_zone_name.setText(top_row["zone"]["name"])
+            self.critical_zone_pop.setText(f"{top_row['zone']['population']:,}")
+            self.critical_zone_risk.setText(f"{top_row['risk']:.1f}")
+            self.critical_zone_shelter.setText(top_row["shelter"]["name"])
+            self.critical_zone_dist.setText(f"{top_row['distance_km']:.2f} km")
+            self.critical_zone_teams.setText(str(top_row["teams"]))
+            self.critical_zone_boats.setText(str(top_row["boats"]))
+            
+            crit_travel_time_min = max(5, int(top_row['distance_km'] * 6.0 + (top_row['zone']['population'] / 3000.0) * 4.0))
+            self.critical_zone_time.setText(f"{crit_travel_time_min} min")
+            
+            c_zone = top_row["zone"]["name"]
+            c_teams = top_row["teams"]
+            c_boats = top_row["boats"]
+            c_shelter = top_row["shelter"]["name"]
+            c_risk = top_row["risk"]
+            if c_risk > 90:
+                reco_str = f"🔴 <b>CRITICAL ALERT:</b> Immediate evacuation advised for {c_zone}. Deploy {c_teams} rescue teams and {c_boats} boats immediately. Evacuate to {c_shelter}."
+            elif c_risk > 70:
+                reco_str = f"🟠 <b>HIGH RISK:</b> Commencing evacuation. Deploy {c_teams} teams and prepare {c_boats} rescue boats. Target shelter: {c_shelter}."
+            else:
+                reco_str = f"🟡 <b>WARNING:</b> Route status on alert. Deploy {c_teams} standby teams for traffic control towards {c_shelter}."
+            self.critical_zone_reco.setText(reco_str)
+        else:
+            self.critical_zone_name.setText("N/A")
+            self.critical_zone_pop.setText("-")
+            self.critical_zone_risk.setText("-")
+            self.critical_zone_shelter.setText("-")
+            self.critical_zone_dist.setText("-")
+            self.critical_zone_teams.setText("-")
+            self.critical_zone_boats.setText("-")
+            self.critical_zone_time.setText("-")
+            self.critical_zone_reco.setText("No immediate critical risks identified.")
+            
+        # Update RESOURCE ALLOCATION Card
+        self.res_teams_label.setText(str(total_teams))
+        self.res_boats_label.setText(str(total_boats))
+        med_units = max(1, math.ceil(total_teams / 3)) if total_teams > 0 else 0
+        self.res_med_label.setText(str(med_units))
+        vehicles = max(5, int(total_teams * 1.5)) if total_teams > 0 else 0
+        self.res_veh_label.setText(str(vehicles))
+        self.res_shelters_label.setText(str(shelters_activated))
+        
+        # COMMANDER RECOMMENDATION Operational Briefing
+        briefing = []
+        city_name = self.current_city["name"] if self.current_city else "Selected Area"
+        city_score = self.city_result.score
+        alert_lvl = alert_level(city_score)
+        
+        briefing.append(f"• <b>Issue {alert_lvl} Alert Advisory</b> for the city of {city_name}.")
+        briefing.append(f"• <b>Deploy {total_teams} rescue teams</b> and {total_boats} rescue boats to designated zones.")
+        briefing.append(f"• <b>Open and activate {shelters_activated} evacuation shelters</b> to receive evacuees.")
+        
+        if plan:
+            top_zone = plan[0]["zone"]["name"]
+            top_score = plan[0]["risk"]
+            briefing.append(f"• <b>Prioritize {top_zone}</b> immediately due to critical risk score ({top_score:.1f}).")
+            
+            boat_zones = sum(1 for r in plan if r["boats"] > 0)
+            if boat_zones > 0:
+                briefing.append(f"• <b>Prepare {boat_zones} rescue boats</b> for marine rescue operations.")
+                
+            low_risk_zones = sum(1 for r in plan if r["risk"] <= 50)
+            if low_risk_zones > 0:
+                briefing.append(f"• <b>Monitor {low_risk_zones} zones</b> on watch status for runoff hazards.")
+                
+        self.commander_briefing_label.setText("<br>".join(briefing))
+        
+        # Populate Priority Table
         self.priority_table.setRowCount(len(plan))
         for row_idx, row in enumerate(plan):
             score = row['priority_score']
             if score > 100000:
-                prio_str = f"Critical ({score/1000:.0f}K)"
+                prio_str = "Critical"
             elif score > 50000:
-                prio_str = f"High ({score/1000:.0f}K)"
+                prio_str = "High"
             elif score > 10000:
-                prio_str = f"Medium ({score/1000:.0f}K)"
+                prio_str = "Medium"
             else:
-                prio_str = f"Low ({score/1000:.0f}K)"
+                prio_str = "Low"
                 
-            values = [
-                row["zone"]["name"],
-                f"{row['priority_score'] / 1000:.0f}",
-                row["shelter"]["name"],
-                f"{row['distance_km']:.1f} km",
-                prio_str,
-                str(row["teams"]),
-                str(row["boats"])
-            ]
-            for col, value in enumerate(values):
-                self.priority_table.setItem(row_idx, col, QTableWidgetItem(value))
+            risk_score = row["risk"]
+            risk_lvl = alert_level(risk_score)
+            reason_str = get_evac_reason(row)
+            
+            self.priority_table.setItem(row_idx, 0, QTableWidgetItem(str(row_idx + 1)))
+            self.priority_table.setItem(row_idx, 1, QTableWidgetItem(row["zone"]["name"]))
+            
+            # Risk Level Badge
+            bg = PALETTE["green"] if risk_lvl == "Green" else PALETTE["yellow"] if risk_lvl == "Yellow" else PALETTE["orange"] if risk_lvl == "Orange" else PALETTE["red"]
+            fg = "#111111" if risk_lvl in {"Green", "Yellow"} else "#FFFFFF"
+            self.priority_table.setCellWidget(row_idx, 2, make_badge(risk_lvl, bg, fg))
+            
+            self.priority_table.setItem(row_idx, 3, QTableWidgetItem(f"{row['zone']['population']:,}"))
+            self.priority_table.setItem(row_idx, 4, QTableWidgetItem(row["shelter"]["name"]))
+            self.priority_table.setItem(row_idx, 5, QTableWidgetItem(f"{row['distance_km']:.1f} km"))
+            
+            # Evacuation Priority Badge
+            p_bg = PALETTE["red"] if prio_str == "Critical" else PALETTE["orange"] if prio_str == "High" else PALETTE["yellow"] if prio_str == "Medium" else PALETTE["green"]
+            p_fg = "#111111" if prio_str in {"Low", "Medium"} else "#FFFFFF"
+            self.priority_table.setCellWidget(row_idx, 6, make_badge(prio_str, p_bg, p_fg))
+            
+            self.priority_table.setItem(row_idx, 7, QTableWidgetItem(reason_str))
+            
         self.priority_table.resizeColumnsToContents()
-        # Shelter occupancy removed
+        
+        # Populate Shelter Command Board
+        self.shelter_table.setRowCount(len(self.current_shelters))
+        for s_idx, shelter in enumerate(self.current_shelters):
+            cap = int(shelter["capacity"])
+            occ = int(shelter["current_occupancy"])
+            av = cap - occ
+            ratio = occ / cap if cap > 0 else 1.0
+            
+            if ratio < 0.7:
+                status_text = "Available"
+                s_bg = PALETTE["green"]
+                s_fg = "#FFFFFF"
+            elif ratio < 0.95:
+                status_text = "Near Capacity"
+                s_bg = PALETTE["orange"]
+                s_fg = "#FFFFFF"
+            else:
+                status_text = "Full"
+                s_bg = PALETTE["red"]
+                s_fg = "#FFFFFF"
+                
+            self.shelter_table.setItem(s_idx, 0, QTableWidgetItem(shelter["name"]))
+            self.shelter_table.setItem(s_idx, 1, QTableWidgetItem(str(cap)))
+            self.shelter_table.setItem(s_idx, 2, QTableWidgetItem(str(occ)))
+            self.shelter_table.setItem(s_idx, 3, QTableWidgetItem(str(av)))
+            self.shelter_table.setCellWidget(s_idx, 4, make_badge(status_text, s_bg, s_fg))
+            
+        self.shelter_table.resizeColumnsToContents()
+        
+        # Update Route Select ComboBox
         self.route_select_combo.blockSignals(True)
         current_selection = self.route_select_combo.currentText()
         self.route_select_combo.clear()
@@ -3063,7 +3570,54 @@ class FloodGuardWindow(QMainWindow):
         else:
             self.route_select_combo.setCurrentIndex(0)
         self.route_select_combo.blockSignals(False)
+        self.on_route_selection_changed()
+
+    def on_route_selection_changed(self, text: str = "") -> None:
+        if not self.planner:
+            return
+        plan = self.planner.plan(self.zone_scores)
         self.redraw_routes(plan)
+        self.update_route_details()
+
+    def update_route_details(self) -> None:
+        if not self.planner:
+            self.route_detail_frame.hide()
+            return
+            
+        plan = self.planner.plan(self.zone_scores)
+        selected = self.route_select_combo.currentText()
+        if not selected or selected == "All Routes":
+            self.route_detail_frame.hide()
+            return
+            
+        row = next((r for r in plan if r["zone"]["name"] == selected), None)
+        if not row:
+            self.route_detail_frame.hide()
+            return
+            
+        self.route_detail_frame.show()
+        zone_name = row["zone"]["name"]
+        shelter_name = row["shelter"]["name"]
+        dist = row["distance_km"]
+        risk = row["risk"]
+        
+        travel_time_min = max(5, int(dist * 6.0 + (row["zone"]["population"] / 3000.0) * 4.0))
+        
+        if risk > 95:
+            safety_str = "Safety: Low (Active Flooding)"
+            safety_color = PALETTE["red"]
+        elif risk > 80:
+            safety_str = "Safety: Medium (Precaution Advised)"
+            safety_color = PALETTE["orange"]
+        else:
+            safety_str = "Safety: High"
+            safety_color = PALETTE["green"]
+            
+        self.route_detail_path.setText(f"<b>{zone_name}</b> &rarr; <b>{shelter_name}</b>")
+        self.route_detail_dist.setText(f"📏 {dist:.1f} km")
+        self.route_detail_time.setText(f"⏱️ {travel_time_min} min")
+        self.route_detail_safety.setText(safety_str)
+        self.route_detail_safety.setStyleSheet(f"color: {safety_color}; font-weight: bold;")
 
     def redraw_routes(self, plan: list[dict]) -> None:
         if not hasattr(self, "route_view"):
@@ -3086,12 +3640,13 @@ class FloodGuardWindow(QMainWindow):
             bounds.append((lat, lon))
             folium.CircleMarker(
                 location=[lat, lon],
-                radius=6,
+                radius=8,
                 color="#111827",
                 fill=True,
                 fill_color=alert_color(alert_level(score)),
                 fill_opacity=0.9,
-                popup=zone["name"]
+                tooltip=f"Zone: {zone['name']}",
+                popup=f"<b>Zone:</b> {zone['name']}<br><b>Risk:</b> {score:.1f}<br><b>Population:</b> {zone['population']:,}"
             ).add_to(m)
             
         for shelter in self.current_shelters:
@@ -3099,8 +3654,9 @@ class FloodGuardWindow(QMainWindow):
             bounds.append((lat, lon))
             folium.Marker(
                 location=[lat, lon],
-                icon=folium.Icon(color="blue", icon="home"),
-                popup=shelter["name"]
+                icon=folium.Icon(color="green", icon="home"),
+                tooltip=f"Shelter: {shelter['name']}",
+                popup=f"<b>Shelter:</b> {shelter['name']}<br><b>Capacity:</b> {shelter['capacity']}<br><b>Occupancy:</b> {shelter['current_occupancy']}"
             ).add_to(m)
             
         node_lookup = {
@@ -3113,7 +3669,38 @@ class FloodGuardWindow(QMainWindow):
                 continue
             coords = [(node_lookup[node]["latitude"], node_lookup[node]["longitude"]) for node in row["path"] if node in node_lookup]
             if len(coords) >= 2:
-                folium.PolyLine(coords, color="#10B981", weight=4, opacity=0.8, dash_array="10").add_to(m)
+                dist = row["distance_km"]
+                risk = row["risk"]
+                travel_time_min = max(5, int(dist * 6.0 + (row["zone"]["population"] / 3000.0) * 4.0))
+                
+                if risk > 95:
+                    safety_str = "Low (Active Flooding)"
+                    safety_color = "red"
+                elif risk > 80:
+                    safety_str = "Medium (Precaution Advised)"
+                    safety_color = "orange"
+                else:
+                    safety_str = "High"
+                    safety_color = "green"
+                    
+                popup_html = f"""
+                <div style="font-family: sans-serif; font-size: 12px; min-width: 200px;">
+                    <b style="color:#0F766E;">{row['zone']['name']}</b><br>
+                    &rarr; <b style="color:#111827;">{row['shelter']['name']}</b><br><br>
+                    <b>Distance:</b> {dist:.1f} km<br>
+                    <b>Travel Time:</b> {travel_time_min} min<br>
+                    <b>Safety:</b> <span style="color:{safety_color}; font-weight:bold;">{safety_str}</span>
+                </div>
+                """
+                folium.PolyLine(
+                    coords,
+                    color="#10B981",
+                    weight=5,
+                    opacity=0.85,
+                    dash_array="10",
+                    tooltip=f"Route: {row['zone']['name']} → {row['shelter']['name']}",
+                    popup=folium.Popup(popup_html, max_width=250)
+                ).add_to(m)
         
         if bounds:
             m.fit_bounds(bounds)
