@@ -2567,7 +2567,7 @@ class FloodGuardWindow(QMainWindow):
             lon_min, lon_max = city["longitude"] - 0.1, city["longitude"] + 0.1
 
         # Reusable helper to generate contour polygons for GIS layers
-        def add_contour_layer(grid_data_vals, colors, levels):
+        def add_contour_layer(grid_data_vals, colors, levels, layer_name=None):
             grid_lats = np.linspace(lat_min, lat_max, grid_data_vals.shape[0])
             grid_lons = np.linspace(lon_min, lon_max, grid_data_vals.shape[1])
             
@@ -2585,6 +2585,78 @@ class FloodGuardWindow(QMainWindow):
             fig, ax = plt.subplots()
             cs = ax.contourf(grid_lons, grid_lats, smoothed, levels=levels)
             
+            def get_poly_popup_html(plat, plon, val, color):
+                if val >= 90.0:
+                    cat = "Extreme Density"
+                elif val >= 75.0:
+                    cat = "Very High Density"
+                elif val >= 55.0:
+                    cat = "High Density"
+                elif val >= 35.0:
+                    cat = "Medium Density"
+                elif val >= 15.0:
+                    cat = "Low Density"
+                else:
+                    cat = "Very Low Density"
+                
+                infra_count = 0
+                if self.current_infra:
+                    infra_count = sum(1 for inf in self.current_infra if ((plat - float(inf["latitude"]))**2 + (plon - float(inf["longitude"]))**2)**0.5 <= 0.02)
+                
+                nearest_s = min(self.current_shelters, key=lambda s: ((plat - float(s["latitude"]))**2 + (plon - float(s["longitude"]))**2)**0.5) if self.current_shelters else None
+                nearest_s_name = nearest_s["name"] if nearest_s else "None"
+                
+                elev = self.current_model.get_elevation(plat, plon) if self.current_model else 15.0
+                risk = self.current_model.get_flood_risk(plat, plon, self.scenario_rainfall, self.scenario_river_level) if self.current_model else 0.0
+                
+                return f"""
+                <div style="font-family: 'SF Pro Text', -apple-system, sans-serif; font-size: 13px; line-height: 1.5; color: #1F2937; min-width: 220px; padding: 6px;">
+                    <h4 style="margin: 0 0 8px 0; color: #111827; font-size: 15px; border-bottom: 2px solid {color}; padding-bottom: 4px;">Population Density Detail</h4>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Category:</td><td style="padding: 4px 0; text-align: right; font-weight: bold; color: {color};">{cat}</td></tr>
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Relative Density:</td><td style="padding: 4px 0; text-align: right; font-weight: bold;">{val:.1f}%</td></tr>
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Nearby Infra Count:</td><td style="padding: 4px 0; text-align: right; font-weight: bold;">{infra_count}</td></tr>
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Nearest Shelter:</td><td style="padding: 4px 0; text-align: right;">{nearest_s_name}</td></tr>
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Elevation:</td><td style="padding: 4px 0; text-align: right; font-weight: bold;">{int(elev)} m</td></tr>
+                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Current Flood Risk:</td><td style="padding: 4px 0; text-align: right; font-weight: bold;">{risk:.1f}/100</td></tr>
+                    </table>
+                </div>
+                """
+
+            def add_poly_to_map(coords, color, idx):
+                if layer_name == "population" and len(coords) > 0:
+                    plat_avg = sum(c[0] for c in coords) / len(coords)
+                    plon_avg = sum(c[1] for c in coords) / len(coords)
+                    level_bounds = levels
+                    val_avg = (level_bounds[idx] + level_bounds[idx+1]) / 2.0
+                    p_html = get_poly_popup_html(plat_avg, plon_avg, val_avg, color)
+                    
+                    folium.Polygon(
+                        locations=coords,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.35,
+                        color=color,
+                        weight=0.5,
+                        opacity=0.4,
+                        smooth_factor=1.0,
+                        interactive=True,
+                        popup=folium.Popup(p_html, max_width=300),
+                        tooltip=f"Density: {val_avg:.0f}%"
+                    ).add_to(m)
+                else:
+                    folium.Polygon(
+                        locations=coords,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.35,
+                        color=color,
+                        weight=0.5,
+                        opacity=0.4,
+                        smooth_factor=1.0,
+                        interactive=False
+                    ).add_to(m)
+
             if hasattr(cs, "collections"):
                 for idx, collection in enumerate(cs.collections):
                     color = colors[idx]
@@ -2594,34 +2666,14 @@ class FloodGuardWindow(QMainWindow):
                         for poly in polys:
                             coords = [[float(pt[1]), float(pt[0])] for pt in poly]
                             if len(coords) >= 3:
-                                folium.Polygon(
-                                    locations=coords,
-                                    fill=True,
-                                    fill_color=color,
-                                    fill_opacity=0.35,
-                                    color=color,
-                                    weight=0.5,
-                                    opacity=0.4,
-                                    smooth_factor=1.0,
-                                    interactive=False
-                                ).add_to(m)
+                                add_poly_to_map(coords, color, idx)
             elif hasattr(cs, "allsegs"):
                 for idx, level_segs in enumerate(cs.allsegs):
                     color = colors[idx]
                     for seg in level_segs:
                         coords = [[float(pt[1]), float(pt[0])] for pt in seg]
                         if len(coords) >= 3:
-                            folium.Polygon(
-                                locations=coords,
-                                fill=True,
-                                fill_color=color,
-                                fill_opacity=0.35,
-                                color=color,
-                                weight=0.5,
-                                opacity=0.4,
-                                smooth_factor=1.0,
-                                interactive=False
-                            ).add_to(m)
+                            add_poly_to_map(coords, color, idx)
             plt.close(fig)
 
         # Helper to compute popup HTML with exactly 9 fields
@@ -2713,7 +2765,7 @@ class FloodGuardWindow(QMainWindow):
 
         # 1. Population density layer (Contour Polygons)
         if self.layer_population.isChecked() and self.current_model:
-            grid_size = 40
+            grid_size = 60  # Higher grid resolution for finer detail
             grid_lats = np.linspace(lat_min, lat_max, grid_size)
             grid_lons = np.linspace(lon_min, lon_max, grid_size)
             
@@ -2722,9 +2774,9 @@ class FloodGuardWindow(QMainWindow):
                 for j, ln in enumerate(grid_lons):
                     grid_vals[i, j] = self.current_model.get_population_density(lt, ln) * 100.0
                     
-            pop_colors = ["#93C5FD", "#10B981", "#FBBF24", "#F97316", "#EF4444"]
-            pop_levels = [-1.0, 20.0, 40.0, 60.0, 80.0, 101.0]
-            add_contour_layer(grid_vals, pop_colors, pop_levels)
+            pop_colors = ["#E5E7EB", "#93C5FD", "#14B8A6", "#FBBF24", "#F97316", "#EF4444"]
+            pop_levels = [-1.0, 15.0, 35.0, 55.0, 75.0, 90.0, 101.0]  # 6 soft, professional categories
+            add_contour_layer(grid_vals, pop_colors, pop_levels, layer_name="population")
             
         # 2. Flood Risk heatmap layer (Contour Polygons)
         if self.layer_risk.isChecked() and self.current_zones and self.current_model:
@@ -2893,10 +2945,10 @@ class FloodGuardWindow(QMainWindow):
             </div>
             
             <div style="margin-top: 8px;">
-                <b>Population Density (Continuous)</b><br>
-                <div style="background: linear-gradient(to right, #0B3C5D, #328CC1, green, yellow, red); height: 8px; border-radius: 4px; margin-top: 4px; margin-bottom: 2px;"></div>
-                <span style="float: left; font-size:9px;">Sparse</span>
-                <span style="float: right; font-size:9px;">Very High</span>
+                <b>Population Density (Contour Scale)</b><br>
+                <div style="background: linear-gradient(to right, #E5E7EB, #93C5FD, #14B8A6, #FBBF24, #F97316, #EF4444); height: 8px; border-radius: 4px; margin-top: 4px; margin-bottom: 2px;"></div>
+                <span style="float: left; font-size:9px;">Very Low</span>
+                <span style="float: right; font-size:9px;">Extreme</span>
                 <div style="clear: both;"></div>
             </div>
             
