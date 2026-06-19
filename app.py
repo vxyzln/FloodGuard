@@ -2566,6 +2566,64 @@ class FloodGuardWindow(QMainWindow):
             lat_min, lat_max = city["latitude"] - 0.1, city["latitude"] + 0.1
             lon_min, lon_max = city["longitude"] - 0.1, city["longitude"] + 0.1
 
+        # Reusable helper to generate contour polygons for GIS layers
+        def add_contour_layer(grid_data_vals, colors, levels):
+            grid_lats = np.linspace(lat_min, lat_max, grid_data_vals.shape[0])
+            grid_lons = np.linspace(lon_min, lon_max, grid_data_vals.shape[1])
+            
+            from scipy.ndimage import gaussian_filter
+            smoothed = gaussian_filter(grid_data_vals, sigma=2.0)
+            smoothed = np.clip(smoothed, 0.0, 100.0)
+            
+            import matplotlib
+            try:
+                matplotlib.use('Agg', force=True)
+            except Exception:
+                pass
+            import matplotlib.pyplot as plt
+            
+            fig, ax = plt.subplots()
+            cs = ax.contourf(grid_lons, grid_lats, smoothed, levels=levels)
+            
+            if hasattr(cs, "collections"):
+                for idx, collection in enumerate(cs.collections):
+                    color = colors[idx]
+                    paths = collection.get_paths()
+                    for path in paths:
+                        polys = path.to_polygons()
+                        for poly in polys:
+                            coords = [[float(pt[1]), float(pt[0])] for pt in poly]
+                            if len(coords) >= 3:
+                                folium.Polygon(
+                                    locations=coords,
+                                    fill=True,
+                                    fill_color=color,
+                                    fill_opacity=0.35,
+                                    color=color,
+                                    weight=0.5,
+                                    opacity=0.4,
+                                    smooth_factor=1.0,
+                                    interactive=False
+                                ).add_to(m)
+            elif hasattr(cs, "allsegs"):
+                for idx, level_segs in enumerate(cs.allsegs):
+                    color = colors[idx]
+                    for seg in level_segs:
+                        coords = [[float(pt[1]), float(pt[0])] for pt in seg]
+                        if len(coords) >= 3:
+                            folium.Polygon(
+                                locations=coords,
+                                fill=True,
+                                fill_color=color,
+                                fill_opacity=0.35,
+                                color=color,
+                                weight=0.5,
+                                opacity=0.4,
+                                smooth_factor=1.0,
+                                interactive=False
+                            ).add_to(m)
+            plt.close(fig)
+
         # Helper to compute popup HTML with exactly 9 fields
         def get_popup_html(name, el_type, plat, plon, status_override=None):
             elev = 15.0
@@ -2653,7 +2711,7 @@ class FloodGuardWindow(QMainWindow):
             </div>
             """
 
-        # 1. Population density layer (Heatmap)
+        # 1. Population density layer (Contour Polygons)
         if self.layer_population.isChecked() and self.current_model:
             grid_size = 40
             grid_lats = np.linspace(lat_min, lat_max, grid_size)
@@ -2662,26 +2720,13 @@ class FloodGuardWindow(QMainWindow):
             grid_vals = np.zeros((grid_size, grid_size))
             for i, lt in enumerate(grid_lats):
                 for j, ln in enumerate(grid_lons):
-                    grid_vals[i, j] = self.current_model.get_population_density(lt, ln)
+                    grid_vals[i, j] = self.current_model.get_population_density(lt, ln) * 100.0
                     
-            from scipy.ndimage import gaussian_filter
-            smoothed_grid = gaussian_filter(grid_vals, sigma=2.0)
+            pop_colors = ["#93C5FD", "#10B981", "#FBBF24", "#F97316", "#EF4444"]
+            pop_levels = [-1.0, 20.0, 40.0, 60.0, 80.0, 101.0]
+            add_contour_layer(grid_vals, pop_colors, pop_levels)
             
-            grid_data = []
-            for i, lt in enumerate(grid_lats):
-                for j, ln in enumerate(grid_lons):
-                    grid_data.append([lt, ln, float(smoothed_grid[i, j])])
-                    
-            if grid_data:
-                folium.plugins.HeatMap(
-                    grid_data,
-                    radius=35,
-                    blur=25,
-                    min_opacity=0.1,
-                    gradient={0.0: '#0B3C5D', 0.25: '#328CC1', 0.5: 'green', 0.75: 'yellow', 1.0: 'red'}
-                ).add_to(m)
-            
-        # 2. Flood Risk heatmap layer
+        # 2. Flood Risk heatmap layer (Contour Polygons)
         if self.layer_risk.isChecked() and self.current_zones and self.current_model:
             risk_vals = [self.zone_scores.get(int(z["zone_id"]), 0.0) / 100.0 for z in self.current_zones]
             
@@ -2704,26 +2749,13 @@ class FloodGuardWindow(QMainWindow):
                         interp_risk = np.sum(weights * zone_vals) / np.sum(weights)
                         
                     model_risk = self.current_model.get_flood_risk(lt, ln, self.scenario_rainfall, self.scenario_river_level) / 100.0
-                    grid_vals[i, j] = 0.4 * interp_risk + 0.6 * model_risk
+                    grid_vals[i, j] = (0.4 * interp_risk + 0.6 * model_risk) * 100.0
                     
-            from scipy.ndimage import gaussian_filter
-            smoothed_grid = gaussian_filter(grid_vals, sigma=2.0)
+            risk_colors = ["#2563EB", "#10B981", "#FBBF24", "#F97316", "#EF4444"]
+            risk_levels = [-1.0, 20.0, 40.0, 60.0, 80.0, 101.0]
+            add_contour_layer(grid_vals, risk_colors, risk_levels)
             
-            grid_data = []
-            for i, lt in enumerate(grid_lats):
-                for j, ln in enumerate(grid_lons):
-                    grid_data.append([lt, ln, float(smoothed_grid[i, j])])
-                    
-            if grid_data:
-                folium.plugins.HeatMap(
-                    grid_data,
-                    radius=35,
-                    blur=25,
-                    min_opacity=0.35,
-                    gradient={0.0: 'blue', 0.25: 'green', 0.5: 'yellow', 0.75: 'orange', 1.0: 'red'}
-                ).add_to(m)
-            
-        # 3. Elevation heatmap layer
+        # 3. Elevation heatmap layer (Contour Polygons)
         if self.layer_elevation.isChecked() and self.current_model:
             grid_size = 40
             grid_lats = np.linspace(lat_min, lat_max, grid_size)
@@ -2734,28 +2766,14 @@ class FloodGuardWindow(QMainWindow):
                 for j, ln in enumerate(grid_lons):
                     grid_vals[i, j] = self.current_model.get_elevation(lt, ln)
                     
-            # Normalize so that lowest is 1.0 (Red) and highest is 0.0 (Dark Green)
             min_e = np.min(grid_vals)
             max_e = np.max(grid_vals)
             span = max_e - min_e if max_e > min_e else 1.0
-            normalized = (max_e - grid_vals) / span
+            normalized = (grid_vals - min_e) / span * 100.0
             
-            from scipy.ndimage import gaussian_filter
-            smoothed_grid = gaussian_filter(normalized, sigma=2.0)
-            
-            grid_data = []
-            for i, lt in enumerate(grid_lats):
-                for j, ln in enumerate(grid_lons):
-                    grid_data.append([lt, ln, float(smoothed_grid[i, j])])
-                    
-            if grid_data:
-                folium.plugins.HeatMap(
-                    grid_data,
-                    radius=35,
-                    blur=25,
-                    min_opacity=0.45,
-                    gradient={0.0: '#064E3B', 0.25: 'green', 0.5: 'yellow', 0.75: 'orange', 1.0: 'red'}
-                ).add_to(m)
+            elev_colors = ["#7F1D1D", "#F97316", "#FBBF24", "#86EFAC", "#064E3B"]
+            elev_levels = [-1.0, 20.0, 40.0, 60.0, 80.0, 101.0]
+            add_contour_layer(normalized, elev_colors, elev_levels)
             
         # 4. Historical flood extent layer
         if self.layer_history.isChecked() and self.current_model:
