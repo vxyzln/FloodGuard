@@ -2,6 +2,34 @@ from __future__ import annotations
 
 from datetime import datetime
 import sys
+import os
+import logging
+import socket
+
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    filename="logs/floodguard.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("FloodGuard")
+
+def check_internet(host="8.8.8.8", port=53, timeout=3.0) -> bool:
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except Exception:
+        return False
+
+def check_api_availability(timeout=1.5) -> bool:
+    try:
+        import requests
+        response = requests.get("https://api.open-meteo.com/v1/forecast", params={"latitude": 0, "longitude": 0}, timeout=timeout)
+        return response.status_code == 200
+    except Exception:
+        return False
 
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -329,6 +357,7 @@ class FloodGuardWindow(QMainWindow):
             self.home_loading.setText("")
         if hasattr(self, "dashboard_status"):
             self.dashboard_status.setText("Using stored data")
+        logger.error(f"Background worker error: {message}")
 
     def shutdown_workers(self) -> None:
         for thread in list(self.active_threads):
@@ -411,8 +440,20 @@ class FloodGuardWindow(QMainWindow):
         search_layout = QVBoxLayout(search_wrap)
         search_layout.setContentsMargins(24, 24, 24, 24)
         search_layout.setSpacing(14)
+        
+        search_header_row = QHBoxLayout()
         search_label = QLabel("Search city")
         search_label.setObjectName("HomeSection")
+        search_header_row.addWidget(search_label)
+        
+        self.btn_refresh_all = QPushButton("Refresh All Data")
+        self.btn_refresh_all.setStyleSheet(f"background: {PALETTE['accent']}; color: white; padding: 6px 12px; font-size: 13px; font-weight: 600; border-radius: 6px;")
+        self.btn_refresh_all.setVisible(False)
+        self.btn_refresh_all.clicked.connect(self.refresh_all_cached_data)
+        search_header_row.addWidget(self.btn_refresh_all)
+        search_header_row.addStretch()
+        search_layout.addLayout(search_header_row)
+
         self.city_search = QLineEdit()
         self.city_search.setObjectName("CitySearch")
         self.city_search.setPlaceholderText("Type a city name")
@@ -422,7 +463,6 @@ class FloodGuardWindow(QMainWindow):
         self.home_message.setStyleSheet('font-family: "SF Pro Text"; font-size: 15px; color: #666666;')
         self.home_loading = QLabel("")
         self.home_loading.setStyleSheet('font-family: "SF Pro Text"; font-size: 14px; color: #EA580C;')
-        search_layout.addWidget(search_label)
         search_layout.addWidget(self.city_search)
         search_layout.addWidget(self.home_message)
         search_layout.addWidget(self.home_loading)
@@ -432,6 +472,50 @@ class FloodGuardWindow(QMainWindow):
         self.open_dashboard_button.setObjectName("OpenDashboard")
         self.open_dashboard_button.clicked.connect(self.open_dashboard)
         layout.addWidget(self.open_dashboard_button)
+
+        # Local Database Overview Panel
+        db_overview_wrap = QFrame()
+        db_overview_wrap.setObjectName("HomeCard")
+        db_overview_layout = QVBoxLayout(db_overview_wrap)
+        db_overview_layout.setContentsMargins(24, 24, 24, 24)
+        db_overview_layout.setSpacing(14)
+        
+        db_title_row = QHBoxLayout()
+        db_section_label = QLabel("Local Database Overview")
+        db_section_label.setStyleSheet("font-family: 'SF Pro Display', 'Helvetica Neue'; font-size: 22px; font-weight: 600;")
+        db_title_row.addWidget(db_section_label)
+        
+        self.btn_view_all_cities = QPushButton("View All Cities")
+        self.btn_view_all_cities.setStyleSheet(f"background: {PALETTE['accent']}; color: white; padding: 6px 12px; font-size: 13px; font-weight: 600; border-radius: 6px;")
+        self.btn_view_all_cities.clicked.connect(self.open_database_manager)
+        db_title_row.addWidget(self.btn_view_all_cities)
+        db_title_row.addStretch()
+        db_overview_layout.addLayout(db_title_row)
+        
+        db_info_layout = QHBoxLayout()
+        
+        db_stats_layout = QVBoxLayout()
+        self.lbl_total_cached = QLabel("Cached Cities: --")
+        self.lbl_total_cached.setStyleSheet("font-size: 15px; font-weight: bold;")
+        self.lbl_last_update = QLabel("Last Updated: --")
+        self.lbl_last_update.setStyleSheet("font-size: 14px; color: #666666;")
+        db_stats_layout.addWidget(self.lbl_total_cached)
+        db_stats_layout.addWidget(self.lbl_last_update)
+        db_info_layout.addLayout(db_stats_layout)
+        
+        db_info_layout.addSpacing(40)
+        
+        db_recent_layout = QVBoxLayout()
+        db_recent_title = QLabel("Recently Cached:")
+        db_recent_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #444444;")
+        self.lbl_recent_cities = QLabel("None")
+        self.lbl_recent_cities.setStyleSheet("font-size: 14px; color: #555555;")
+        db_recent_layout.addWidget(db_recent_title)
+        db_recent_layout.addWidget(self.lbl_recent_cities)
+        db_info_layout.addLayout(db_recent_layout, 1)
+        
+        db_overview_layout.addLayout(db_info_layout)
+        layout.addWidget(db_overview_wrap)
 
         # Status row below Search
         status_row = QHBoxLayout()
@@ -930,9 +1014,49 @@ class FloodGuardWindow(QMainWindow):
         self.online_mode = self.mode_toggle.isChecked()
         self.mode_toggle.setText("Online Mode" if self.online_mode else "Offline Mode")
         self.city_search.setPlaceholderText("Search local cities or add a city online" if self.online_mode else "Search stored cities")
-        self.update_home_status_cards()
-        self.update_search_prompt()
-        self.fetch_weather_if_online()
+        
+        if self.online_mode:
+            logger.info("Online mode enabled")
+            self.set_home_status(self.weather_status_card, "Fetching", PALETTE["yellow"])
+            
+            def check_online_status() -> dict:
+                internet = check_internet()
+                api = check_api_availability() if internet else False
+                return {"internet": internet, "api": api}
+                
+            def success(res: dict) -> None:
+                if res["internet"] and res["api"]:
+                    self.set_home_status(self.weather_status_card, "Connected", PALETTE["green"])
+                    if hasattr(self, "btn_refresh_all"):
+                        self.btn_refresh_all.setVisible(True)
+                else:
+                    self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+                    if hasattr(self, "btn_refresh_all"):
+                        self.btn_refresh_all.setVisible(False)
+                    if not res["internet"]:
+                        self.home_message.setText("No internet connection available.")
+                        logger.error("API failure: No internet connection available.")
+                    else:
+                        self.home_message.setText("Unable to fetch live data. Using cached data.")
+                        logger.error("API failure: Weather API is unavailable.")
+                self.fetch_weather_if_online()
+                
+            def failed(msg: str) -> None:
+                self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+                if hasattr(self, "btn_refresh_all"):
+                    self.btn_refresh_all.setVisible(False)
+                self.home_message.setText("Unable to fetch live data. Using cached data.")
+                logger.error(f"API failure: {msg}")
+                self.fetch_weather_if_online()
+                
+            self.run_background(check_online_status, success, failed)
+        else:
+            logger.info("Online mode disabled")
+            self.set_home_status(self.weather_status_card, "Offline", PALETTE["muted"])
+            if hasattr(self, "btn_refresh_all"):
+                self.btn_refresh_all.setVisible(False)
+            self.update_home_status_cards()
+            self.fetch_weather_if_online()
 
     def load_city(self, name: str) -> None:
         if not name:
@@ -1005,8 +1129,11 @@ class FloodGuardWindow(QMainWindow):
         self.using_cached = False
         if not self.online_mode:
             if hasattr(self, "weather_status_card"):
-                self.set_home_status(self.weather_status_card, "Standby", "#EA580C")
+                self.set_home_status(self.weather_status_card, "Offline", PALETTE["muted"])
             return
+        if not self.current_city:
+            return
+            
         if hasattr(self, "home_loading"):
             self.home_loading.setText("Updating weather...")
         if hasattr(self, "dashboard_status"):
@@ -1017,6 +1144,8 @@ class FloodGuardWindow(QMainWindow):
         lon = float(self.current_city["longitude"])
 
         def task() -> dict:
+            if not check_internet():
+                raise ConnectionError("No internet connection available.")
             payload = self.weather_service.fetch_weather(lat, lon)
             self.cache_service.update_city(city_id, payload)
             return payload
@@ -1047,7 +1176,7 @@ class FloodGuardWindow(QMainWindow):
             self.last_data_update = datetime.now()
             
             if hasattr(self, "weather_status_card"):
-                self.set_home_status(self.weather_status_card, "Ready", "#16A34A")
+                self.set_home_status(self.weather_status_card, "Connected", PALETTE["green"])
             if hasattr(self, "home_loading"):
                 self.home_loading.setText("")
             if hasattr(self, "dashboard_status"):
@@ -1057,13 +1186,237 @@ class FloodGuardWindow(QMainWindow):
         def failed(message: str) -> None:
             self.using_cached = True
             if hasattr(self, "weather_status_card"):
-                self.set_home_status(self.weather_status_card, "Stored Data", "#EA580C")
+                self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
             if hasattr(self, "home_loading"):
                 self.home_loading.setText("")
             if hasattr(self, "dashboard_status"):
                 self.dashboard_status.setText("Using stored data")
+            
+            if "no internet" in message.lower() or "connection" in message.lower():
+                self.home_message.setText("No internet connection available.")
+                logger.error(f"API failure: {message}")
+            else:
+                self.home_message.setText("Unable to fetch live data. Using cached data.")
+                logger.error(f"API failure: {message}")
 
         self.run_background(task, success, failed)
+
+    def apply_db_overview(self, cities: list[dict]) -> None:
+        self.cities_list = cities
+        self.refresh_city_combos()
+        
+        if not hasattr(self, "lbl_total_cached"):
+            return
+            
+        total = len(cities)
+        self.lbl_total_cached.setText(f"Cached Cities: {total}")
+        
+        latest_time = None
+        for c in cities:
+            lu = c.get("last_updated")
+            if lu:
+                if isinstance(lu, str):
+                    try:
+                        lu_dt = datetime.fromisoformat(lu.replace("Z", "+00:00"))
+                    except Exception:
+                        lu_dt = None
+                else:
+                    lu_dt = lu
+                if lu_dt:
+                    if latest_time is None or lu_dt > latest_time:
+                        latest_time = lu_dt
+                        
+        if latest_time:
+            self.lbl_last_update.setText(f"Last Updated:\n{latest_time.strftime('%d %b %Y %H:%M')}")
+        else:
+            self.lbl_last_update.setText("Last Updated:\n--")
+            
+        def sort_key(city_dict):
+            lu = city_dict.get("last_updated")
+            if not lu:
+                return datetime.min
+            if isinstance(lu, str):
+                try:
+                    return datetime.fromisoformat(lu.replace("Z", "+00:00"))
+                except Exception:
+                    return datetime.min
+            return lu
+            
+        sorted_cities = sorted(cities, key=sort_key, reverse=True)
+        recent_names = [c["name"] for c in sorted_cities[:5]]
+        
+        if recent_names:
+            bullet_list = "\n".join([f"• {name}" for name in recent_names])
+            extra = total - 5
+            if extra > 0:
+                bullet_list += f"\n* {extra} more cities"
+            self.lbl_recent_cities.setText(bullet_list)
+        else:
+            self.lbl_recent_cities.setText("None")
+
+    def update_db_overview(self) -> None:
+        def task() -> list[dict]:
+            return self.cache_service.get_all_cities()
+        def success(cities: list[dict]) -> None:
+            self.apply_db_overview(cities)
+        self.run_background(task, success)
+
+    def open_database_manager(self) -> None:
+        from PyQt6.QtWidgets import QDialog, QTableWidget, QTableWidgetItem, QHeaderView
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Cached Cities Database")
+        dialog.setMinimumSize(700, 450)
+        dialog.setStyleSheet(f"background: {PALETTE['background']}; color: {PALETTE['text']};")
+        
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        
+        title = QLabel("Cached Cities Database")
+        title.setStyleSheet(f"font-family: 'SF Pro Display'; font-size: 20px; font-weight: bold; color: {PALETTE['text']};")
+        layout.addWidget(title)
+        
+        table = QTableWidget()
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(["City", "State", "Latitude", "Longitude", "Last Updated"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.setStyleSheet(f"background: {PALETTE['panel']}; color: {PALETTE['text']}; gridline-color: {PALETTE['border']};")
+        layout.addWidget(table)
+        
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(f"background: {PALETTE['border']}; color: {PALETTE['text']}; padding: 8px; border-radius: 6px;")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        
+        def load_table():
+            cities = self.cache_service.get_all_cities()
+            table.setRowCount(len(cities))
+            for row, city in enumerate(cities):
+                table.setItem(row, 0, QTableWidgetItem(city["name"]))
+                table.setItem(row, 1, QTableWidgetItem(city.get("state") or ""))
+                table.setItem(row, 2, QTableWidgetItem(f"{float(city['latitude']):.4f}"))
+                table.setItem(row, 3, QTableWidgetItem(f"{float(city['longitude']):.4f}"))
+                
+                lu = city.get("last_updated")
+                if lu:
+                    if isinstance(lu, datetime):
+                        lu_str = lu.strftime("%d %b %Y %H:%M")
+                    else:
+                        lu_str = str(lu)
+                else:
+                    lu_str = "--"
+                table.setItem(row, 4, QTableWidgetItem(lu_str))
+                
+        load_table()
+        dialog.exec()
+
+    def refresh_all_cached_data(self) -> None:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTextEdit, QPushButton
+        
+        # Check if internet is available first
+        self.set_home_status(self.weather_status_card, "Fetching", PALETTE["yellow"])
+        if not check_internet():
+            self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+            self.home_message.setText("✗ No internet connection")
+            QMessageBox.warning(self, "Network Error", "No internet connection available. Cannot refresh data.")
+            logger.error("Refresh failure: No internet connection available.")
+            return
+
+        # Fetch cached cities
+        cities = self.cache_service.get_all_cities()
+        if not cities:
+            QMessageBox.information(self, "Database Empty", "No cached cities found in the database.")
+            return
+
+        # Helper to check if a city is stale
+        def is_city_stale(city) -> bool:
+            lu = city.get("last_updated")
+            if not lu:
+                return True
+            if isinstance(lu, str):
+                try:
+                    lu = datetime.fromisoformat(lu.replace("Z", "+00:00"))
+                except Exception:
+                    return True
+            lu_naive = lu.replace(tzinfo=None) if lu.tzinfo else lu
+            diff = datetime.now() - lu_naive
+            return diff.total_seconds() > 6 * 3600
+
+        # Filter stale cities
+        stale_cities = [c for c in cities if is_city_stale(c)]
+        if not stale_cities:
+            self.set_home_status(self.weather_status_card, "Connected", PALETTE["green"])
+            QMessageBox.information(self, "Refresh Complete", "All cached cities are up to date (updated within the last 6 hours).")
+            return
+
+        # Set status cards
+        self.set_home_status(self.database_status_card, "Updating", PALETTE["yellow"])
+        self.set_home_status(self.weather_status_card, "Fetching", PALETTE["yellow"])
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Refreshing City Data")
+        dialog.setMinimumSize(400, 300)
+        dialog.setStyleSheet(f"background: {PALETTE['background']}; color: {PALETTE['text']};")
+        
+        dlg_layout = QVBoxLayout(dialog)
+        dlg_layout.setContentsMargins(18, 18, 18, 18)
+        dlg_layout.setSpacing(12)
+        
+        title_lbl = QLabel("Refreshing city data…")
+        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; font-family: 'SF Pro Display';")
+        dlg_layout.addWidget(title_lbl)
+        
+        progress_area = QTextEdit()
+        progress_area.setReadOnly(True)
+        progress_area.setStyleSheet(f"background: {PALETTE['panel']}; color: {PALETTE['text']}; border: 1px solid {PALETTE['border']}; font-family: 'SF Mono', monospace; font-size: 13px;")
+        dlg_layout.addWidget(progress_area)
+        
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(f"background: {PALETTE['accent']}; color: white; padding: 8px; border-radius: 6px;")
+        close_btn.setEnabled(False)
+        close_btn.clicked.connect(dialog.accept)
+        dlg_layout.addWidget(close_btn)
+        
+        dialog.show()
+        
+        def process_city(index: int) -> None:
+            if index >= len(stale_cities):
+                progress_area.append("\nCompleted")
+                close_btn.setEnabled(True)
+                self.update_db_overview()
+                self.update_home_status_cards()
+                logger.info("Refresh All: Completed successfully")
+                return
+                
+            city = stale_cities[index]
+            city_name = city["name"]
+            city_id = city["city_id"]
+            lat = float(city["latitude"])
+            lon = float(city["longitude"])
+            
+            progress_area.append(f"Refreshing {city_name}...")
+            
+            def task() -> dict:
+                try:
+                    weather_data = self.weather_service.fetch_weather(lat, lon)
+                    self.cache_service.update_city(city_id, weather_data)
+                    logger.info(f"Cache update: Successfully updated cache for city {city_name} (ID: {city_id})")
+                    return {"success": True, "name": city_name}
+                except Exception as e:
+                    logger.error(f"Refresh failure: Failed to refresh {city_name} (ID: {city_id}): {e}")
+                    return {"success": False, "name": city_name, "error": str(e)}
+                    
+            def success(res: dict) -> None:
+                if res["success"]:
+                    progress_area.append(f"{res['name']} ✓")
+                else:
+                    progress_area.append(f"{res['name']} ✗ ({res['error']})")
+                process_city(index + 1)
+                
+            self.run_background(task, success)
+            
+        process_city(0)
 
     def update_from_sliders(self) -> None:
         if not self.current_zones:
@@ -1094,6 +1447,7 @@ class FloodGuardWindow(QMainWindow):
         mode = "online" if self.online_mode and not self.using_cached else "offline"
         if hasattr(self, "dashboard_status"):
             self.dashboard_status.setText("Updating scenario...")
+        self.set_home_status(self.model_status_card, "Predicting", PALETTE["yellow"])
 
         def task() -> dict:
             res = self.risk_service.score_scenario(self.scenario_rainfall, self.scenario_river_level, zones, history)
@@ -1132,6 +1486,7 @@ class FloodGuardWindow(QMainWindow):
         self.last_data_update = datetime.now()
         if hasattr(self, "dashboard_status"):
             self.dashboard_status.setText("")
+        self.set_home_status(self.model_status_card, "Loaded", PALETTE["green"])
         self.update_dashboard()
         if self.stack.currentIndex() == 2:
             self.redraw_map()
@@ -1542,15 +1897,38 @@ class FloodGuardWindow(QMainWindow):
             else:
                 self.set_home_status(self.database_status_card, "Error", PALETTE["red"])
                 
-            # Weather API
+            # Weather API Status
             if self.online_mode:
-                self.set_home_status(self.weather_status_card, "Ready", PALETTE["green"])
+                def check_api() -> dict:
+                    internet = check_internet()
+                    api = check_api_availability() if internet else False
+                    return {"internet": internet, "api": api}
+                    
+                def success_api(api_res: dict) -> None:
+                    if api_res["internet"] and api_res["api"]:
+                        self.set_home_status(self.weather_status_card, "Connected", PALETTE["green"])
+                        if hasattr(self, "btn_refresh_all"):
+                            self.btn_refresh_all.setVisible(True)
+                    else:
+                        self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+                        if hasattr(self, "btn_refresh_all"):
+                            self.btn_refresh_all.setVisible(False)
+                            
+                def failed_api(msg: str) -> None:
+                    self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+                    if hasattr(self, "btn_refresh_all"):
+                        self.btn_refresh_all.setVisible(False)
+                        
+                self.set_home_status(self.weather_status_card, "Fetching", PALETTE["yellow"])
+                self.run_background(check_api, success_api, failed_api)
             else:
                 self.set_home_status(self.weather_status_card, "Offline", PALETTE["muted"])
+                if hasattr(self, "btn_refresh_all"):
+                    self.btn_refresh_all.setVisible(False)
                 
-            # Risk Model
+            # Risk Model Status
             if res["model"]:
-                self.set_home_status(self.model_status_card, "Ready", PALETTE["green"])
+                self.set_home_status(self.model_status_card, "Loaded", PALETTE["green"])
             else:
                 self.set_home_status(self.model_status_card, "Error", PALETTE["red"])
                 
@@ -1621,33 +1999,35 @@ class FloodGuardWindow(QMainWindow):
             if status == "local":
                 city_name = result["city_name"]
                 if hasattr(self, "home_message"):
-                    self.home_message.setText("✓ Data ready")
-                if hasattr(self, "home_loading"):
-                    self.home_loading.setText("✓ Data ready")
-                self.update_cities_list_and_load(city_name, "Data ready")
+                    self.home_message.setText("✓ Loaded from local database")
+                self.update_cities_list_and_load(city_name, "Loaded from local database")
                 
             elif status == "offline_missing":
                 if hasattr(self, "home_message"):
-                    self.home_message.setText("✗ City unavailable offline")
-                if hasattr(self, "home_loading"):
-                    self.home_loading.setText("✗ City unavailable offline")
-                QMessageBox.information(self, "City Not Available", "City unavailable offline")
+                    self.home_message.setText("✗ City not found")
+                QMessageBox.information(self, "City Not Available", "City not found in local database.")
                 
             elif status == "downloaded":
                 city_name = result["city_name"]
                 if hasattr(self, "home_message"):
                     self.home_message.setText("✓ Downloaded and cached successfully")
-                if hasattr(self, "home_loading"):
-                    self.home_loading.setText("✓ Downloaded and cached successfully")
-                self.update_cities_list_and_load(city_name, "Downloaded and Cached")
+                self.update_cities_list_and_load(city_name, "Downloaded and cached successfully")
                 
         def failed(msg: str) -> None:
             if hasattr(self, "home_loading"):
                 self.home_loading.setText("")
-            if hasattr(self, "home_message"):
-                self.home_message.setText("✗ City search failed")
-            QMessageBox.warning(self, "Search Error", f"Failed to search city: {msg}")
             
+            if "not found" in msg.lower() or "404" in msg:
+                if hasattr(self, "home_message"):
+                    self.home_message.setText("✗ City not found")
+                QMessageBox.warning(self, "Search Error", "✗ City not found")
+                logger.error(f"API failure: City not found: {query}")
+            else:
+                if hasattr(self, "home_message"):
+                    self.home_message.setText("✗ No internet connection")
+                QMessageBox.warning(self, "Search Error", "✗ No internet connection")
+                logger.error(f"API failure: {msg}")
+
         self.run_background(task, success, failed)
 
     def start_initialization(self) -> None:
@@ -1670,6 +2050,7 @@ class FloodGuardWindow(QMainWindow):
                 self.cities_list = cities
                 self.current_city = None
                 self.refresh_city_combos()
+                self.apply_db_overview(cities)
             else:
                 self.home_message.setText("✗ Database failed to initialize.")
                 
@@ -1687,6 +2068,7 @@ class FloodGuardWindow(QMainWindow):
         def success(cities: list[dict]) -> None:
             self.cities_list = cities
             self.refresh_city_combos()
+            self.apply_db_overview(cities)
             self.load_city(city_name)
             self.show_city_dialog(dialog_msg)
             

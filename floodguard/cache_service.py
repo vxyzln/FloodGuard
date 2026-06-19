@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import logging
 from datetime import datetime, date
 from mysql.connector import Error as MySQLError
 from .db import mysql_connection, fetch_all, execute
 from .seed_definitions import build_seed_data
+
+logger = logging.getLogger("FloodGuard.CacheService")
 
 class CacheService:
     @staticmethod
@@ -463,5 +466,86 @@ class CacheService:
                 "SELECT * FROM simulation_logs WHERE city_id = %s ORDER BY timestamp DESC LIMIT 30",
                 (city_id,)
             )
-        except Exception:
+        except Exception as e:
+            logger.error(f"Database failure: get_simulation_logs failed: {e}")
             return []
+
+    @staticmethod
+    def get_all_cached_cities() -> list[dict]:
+        """
+        Returns all cached cities. Alias for get_all_cities.
+        """
+        return CacheService.get_all_cities()
+
+    @staticmethod
+    def get_stale_cities(hours: float = 6.0) -> list[dict]:
+        """
+        Returns a list of cities that are stale (older than `hours` hours).
+        """
+        try:
+            cities = CacheService.get_all_cities()
+            stale_list = []
+            for city in cities:
+                lu = city.get("last_updated")
+                if not lu:
+                    stale_list.append(city)
+                    continue
+                if isinstance(lu, str):
+                    try:
+                        lu = datetime.fromisoformat(lu.replace("Z", "+00:00"))
+                    except Exception:
+                        stale_list.append(city)
+                        continue
+                lu_naive = lu.replace(tzinfo=None) if lu.tzinfo else lu
+                diff = datetime.now() - lu_naive
+                if diff.total_seconds() > hours * 3600:
+                    stale_list.append(city)
+            return stale_list
+        except Exception as e:
+            logger.error(f"Database failure: get_stale_cities failed: {e}")
+            return []
+
+    @staticmethod
+    def refresh_city(city_id: int) -> bool:
+        """
+        Fetches the latest weather data for a city from the API and updates MySQL.
+        """
+        try:
+            # Find the city coordinates
+            rows = fetch_all("SELECT latitude, longitude, city FROM cities WHERE city_id = %s", (city_id,))
+            if not rows:
+                logger.error(f"Refresh failure: City with ID {city_id} not found in database.")
+                return False
+            city = rows[0]
+            lat = float(city["latitude"])
+            lon = float(city["longitude"])
+            city_name = city["city"]
+            
+            # Fetch weather online
+            from .weather_service import WeatherService
+            weather_data = WeatherService.fetch_weather(lat, lon)
+            
+            # Update city in database
+            CacheService.update_city(city_id, weather_data)
+            logger.info(f"Cache update: Successfully updated cache for city {city_name} (ID: {city_id})")
+            return True
+        except Exception as e:
+            logger.error(f"Refresh failure: Failed to refresh city ID {city_id}: {e}")
+            return False
+
+    @staticmethod
+    def refresh_all_cities() -> int:
+        """
+        Refreshes all stale cities in the database.
+        Returns the number of successfully refreshed cities.
+        """
+        try:
+            stale_cities = CacheService.get_stale_cities(hours=6)
+            refreshed_count = 0
+            for city in stale_cities:
+                if CacheService.refresh_city(city["city_id"]):
+                    refreshed_count += 1
+            return refreshed_count
+        except Exception as e:
+            logger.error(f"Refresh failure: refresh_all_cities failed: {e}")
+            return 0
