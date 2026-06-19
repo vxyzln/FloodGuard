@@ -67,14 +67,37 @@ logging.basicConfig(
 logger = logging.getLogger("FloodGuard")
 
 def check_internet(host="8.8.8.8", port=53, timeout=3.0) -> bool:
+    # 1. Try standard port 53 TCP connection
     try:
         socket.setdefaulttimeout(timeout)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((host, port))
+        s.close()
         return True
     except Exception:
-        return False
+        pass
+    
+    # 2. Try HTTP connection to a reliable domain on port 80 (TCP)
+    for test_host in ["google.com", "one.one.one.one", "github.com"]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((test_host, 80))
+            s.close()
+            return True
+        except Exception:
+            pass
+            
+    # 3. Fallback: try an HTTP request (via requests) with a short timeout
+    try:
+        r = requests.get("https://api.open-meteo.com/v1/forecast", params={"latitude": 0, "longitude": 0}, timeout=timeout)
+        if r.status_code == 200:
+            return True
+    except Exception:
+        pass
+        
+    return False
 
-def check_api_availability(timeout=1.5) -> bool:
+def check_api_availability(timeout=2.5) -> bool:
     try:
         response = requests.get("https://api.open-meteo.com/v1/forecast", params={"latitude": 0, "longitude": 0}, timeout=timeout)
         return response.status_code == 200
@@ -4389,13 +4412,19 @@ class FloodGuardWindow(QMainWindow):
                 
             # 2. Fetch city from API (Geocode + Elevation + Weather)
             location_data = self.city_service.search_and_fetch_city(query)
+            
+            # Prevent duplicate key error if resolved city name is already cached in database
+            resolved_name = location_data["city"]
+            if self.cache_service.city_exists(resolved_name):
+                return {"status": "local", "city_name": resolved_name}
+                
             weather_data = self.weather_service.fetch_weather(location_data["latitude"], location_data["longitude"])
             
             # Generate default city layout bundle
             next_id = self.cache_service.get_next_city_id()
             city_bundle = self.city_service.generate_default_city_bundle(
                 city_id=next_id,
-                city_name=location_data["city"],
+                city_name=resolved_name,
                 state=location_data["state"],
                 latitude=location_data["latitude"],
                 longitude=location_data["longitude"],
@@ -4409,12 +4438,12 @@ class FloodGuardWindow(QMainWindow):
             city_bundle["city"]["wind_speed"] = weather_data["wind_speed"]
             
             # Generate placeholder map for new city
-            ensure_placeholder_maps([{"name": location_data["city"]}])
+            ensure_placeholder_maps([{"name": resolved_name}])
             
             # 3. Store everything in MySQL
             self.cache_service.save_city(city_bundle)
             
-            return {"status": "downloaded", "city_name": location_data["city"]}
+            return {"status": "downloaded", "city_name": resolved_name}
             
         def success(result: dict) -> None:
             if hasattr(self, "home_loading"):
@@ -4447,10 +4476,19 @@ class FloodGuardWindow(QMainWindow):
                     self.home_message.setText("✗ City not found")
                 QMessageBox.warning(self, "Search Error", "✗ City not found")
                 logger.error(f"API failure: City not found: {query}")
-            else:
+            elif "duplicate entry" in msg.lower() or "1062" in msg:
                 if hasattr(self, "home_message"):
-                    self.home_message.setText("✗ No internet connection")
-                QMessageBox.warning(self, "Search Error", "✗ No internet connection")
+                    self.home_message.setText("✗ City already exists")
+                QMessageBox.warning(self, "Search Error", "This city is already cached in the database.")
+                logger.error(f"API failure: City already exists: {msg}")
+            else:
+                # If there's an actual internet failure, say so. Otherwise show search failed.
+                if hasattr(self, "home_message"):
+                    self.home_message.setText("✗ Search failed")
+                if not check_internet():
+                    QMessageBox.warning(self, "Search Error", "✗ No internet connection available.")
+                else:
+                    QMessageBox.warning(self, "Search Error", f"Search failed: {msg}")
                 logger.error(f"API failure: {msg}")
 
         self.run_background(task, success, failed)
@@ -4514,13 +4552,76 @@ class FloodGuardWindow(QMainWindow):
 
     def check_ollama(self) -> None:
         def task() -> dict:
+            import shutil
+            import subprocess
+            import os
+            import time
+            
+            # Check if running
+            is_running = False
+            try:
+                response = requests.get("http://localhost:11434/api/tags", timeout=1.5)
+                if response.status_code == 200:
+                    is_running = True
+            except Exception:
+                pass
+                
+            if not is_running:
+                # Try starting Ollama automatically
+                ollama_path = shutil.which("ollama")
+                if not ollama_path:
+                    for p in ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama", "/Applications/Ollama.app/Contents/Resources/ollama"]:
+                        if os.path.exists(p):
+                            ollama_path = p
+                            break
+                if ollama_path:
+                    try:
+                        subprocess.Popen([ollama_path, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        subprocess.Popen(["open", "-a", "Ollama"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+                
+                # Poll to wait for startup (up to 8 seconds)
+                for _ in range(8):
+                    time.sleep(1.0)
+                    try:
+                        response = requests.get("http://localhost:11434/api/tags", timeout=1.0)
+                        if response.status_code == 200:
+                            is_running = True
+                            break
+                    except Exception:
+                        pass
+            
+            # Try to get the models lists
             try:
                 response = requests.get("http://localhost:11434/api/tags", timeout=1.5)
                 response.raise_for_status()
                 models = [m.get("name") for m in response.json().get("models", [])]
-                if "qwen2.5:3b" in models:
-                    return {"status": "ok", "model": "qwen2.5:3b"}
+                
+                target_model = "qwen2.5:3b"
+                has_target = False
+                for m in models:
+                    if m == target_model or m.startswith(target_model + ":"):
+                        has_target = True
+                        break
+                
+                if has_target:
+                    # Preload model in background and keep it warm indefinitely (-1 keep_alive)
+                    try:
+                        requests.post("http://localhost:11434/api/generate", json={"model": target_model, "keep_alive": -1}, timeout=3.0)
+                    except Exception:
+                        pass
+                    return {"status": "ok", "model": target_model}
                 elif "phi3:mini" in models:
+                    # Fallback preload
+                    try:
+                        requests.post("http://localhost:11434/api/generate", json={"model": "phi3:mini", "keep_alive": -1}, timeout=3.0)
+                    except Exception:
+                        pass
                     return {"status": "ok", "model": "phi3:mini"}
                 else:
                     return {"status": "no_model"}
@@ -4580,46 +4681,159 @@ class FloodGuardWindow(QMainWindow):
 
     def _build_system_prompt(self) -> str:
         prompt = (
-            "You are the FloodGuard AI Advisor, an emergency planning assistant for Disaster Management Authorities and Emergency Operations Centers.\n"
-            "You must answer using the live data provided by the FloodGuard platform.\n"
-            "Your tone must be serious, professional, and operational. You do not engage in general chat.\n"
-            "Always explain decisions using: Rainfall, River Levels, Elevation, Historical Flood Activity, Population Exposure.\n"
-            "CRITICAL INSTRUCTION: You are a proprietary FloodGuard system. Under NO CIRCUMSTANCES should you mention language models, Ollama, Qwen, Gemma, training data, or AI limitations. Stay strictly in character.\n"
-            "When data is unavailable, state what information is missing. Provide concise operational recommendations.\n\n"
-            "LIVE DASHBOARD DATA:\n"
+            "You are the FloodGuard AI Advisor. You function strictly as a team of:\n"
+            "- Flood Risk Analyst\n"
+            "- Disaster Management Specialist\n"
+            "- Flood Awareness Assistant\n"
+            "- Emergency Planning Advisor\n"
+            "- Environmental Risk Analyst\n\n"
+            "OPERATIONAL FOCUS:\n"
+            "Your responses must focus exclusively on: Flood risk, Flood preparedness, Flood mitigation, Flood awareness, "
+            "Flood prevention, Infrastructure vulnerability, Emergency planning, Community safety, Climate impacts, and Disaster response. "
+            "Do not engage in generic chat, social pleasantries, or talk about programming/code unless explicitly asked about the project itself.\n\n"
+            "PROJECT ARCHITECTURE REFERENCE (Use when asked how FloodGuard works or about its technical details):\n"
+            "- Core UI: Built with PyQt6 desktop application following a high-contrast professional cream/light EOC theme (background: #F8F6F2, accent: #0F766E, panels: #FFFFFF).\n"
+            "- Database: MySQL manages persistence of city details, historical weather logs, zones, infrastructure, shelters, and simulation logs.\n"
+            "- Caching System: JSON file-cache (floodguard_cache.json) allows the application to boot and run in offline mode when MySQL is disconnected.\n"
+            "- Offline Mode: Runs local simulations, loads pre-drawn map assets, and uses cached datasets when APIs (OpenWeatherMap, Overpass API) are offline.\n"
+            "- Risk Calculation: A Scikit-Learn model trained on historical weather/river records combined with IDW (Inverse Distance Weighting) spatial interpolation over a 40x40 grid mapping elevations, river proximity, and population density.\n"
+            "- Evacuation Planning: Uses Dijkstra's algorithm implemented via NetworkX to compute the shortest, safest route from high-risk zones to shelters, accounting for road distance and shelter capacity.\n"
+            "- Map Visualization: Interactive GIS contour and marker maps generated with folium and displayed using QWebEngineView.\n\n"
+            "SCIENTIFIC & RESPONSIBLE LANGUAGE:\n"
+            "- Do not state future flooding with absolute certainty (e.g. avoid 'Flood will occur' or 'Guaranteed flooding').\n"
+            "- Instead, use scientifically responsible terminology: 'Flood Prone Area Score', 'Flood Vulnerability Assessment', 'Risk Assessment', 'Exposure Assessment', 'Flood Susceptibility'.\n\n"
+            "RESPONSE FORMAT:\n"
+            "For all flood-related, risk, or evacuation queries, structure your output strictly under these markdown headers:\n"
+            "### Assessment\n"
+            "[Provide a clear, high-level summary of the risk/situation]\n"
+            "### Reasoning\n"
+            "[Explain the underlying scientific or logistical basis using the project data, elevation, historical logs, river proximity, etc.]\n"
+            "### Risk Factors\n"
+            "[List specific contributing parameters like rainfall intensity, low elevation, high population density, etc.]\n"
+            "### Recommendations\n"
+            "[Provide actionable, operational steps for emergency planners or community preparedness]\n\n"
+            "HALLUCINATION PREVENTION:\n"
+            "- Base all responses strictly on the live project data provided below.\n"
+            "- If any data point is not available or the city is not loaded, explicitly state 'Data not available' or 'Information not available' rather than fabricating facts.\n\n"
+            "LIVE DASHBOARD CONTEXT:\n"
         )
         if not self.current_city:
             prompt += "No city loaded.\n"
             return prompt
-            
+
         city = self.current_city
-        weather = f"Temp {self.scenario_temperature if hasattr(self, 'scenario_temperature') else city.get('temperature')} C, Humidity {city.get('humidity')}%, Wind {city.get('wind_speed')} km/h, Rainfall {self.scenario_rainfall} mm."
-        prompt += f"Current City: {city['name']}\n"
-        prompt += f"Current Risk Score: {self.city_result.score:.1f}/100\n"
-        prompt += f"Current Alert Level: {alert_level(self.city_result.score)}\n"
+        city_name = city.get("name", "N/A")
+        state = city.get("state", "N/A")
+        lat = city.get("latitude", "N/A")
+        lon = city.get("longitude", "N/A")
+        elevation = city.get("elevation", 15.0)
         
+        # Calculate evacuation metrics
+        total_pop_at_risk = 0
+        total_teams = 0
+        total_boats = 0
+        shelters_activated = 0
+        total_evac_time_hours = 0.0
+        shelter_info = "N/A"
+        
+        if self.planner:
+            plan = self.planner.plan(self.zone_scores)
+            total_teams = sum(row['teams'] for row in plan)
+            total_boats = sum(row['boats'] for row in plan)
+            total_pop_at_risk = sum(row['zone']['population'] for row in plan if row['risk'] > 50)
+            shelters_activated = len(set(row['shelter']['shelter_id'] for row in plan))
+            total_evac_time_hours = max([ (row["distance_km"] * 8.0 + (row["zone"]["population"] / 800.0) * 6.0) / 60.0 for row in plan ]) if plan else 0.0
+            
+            shelter_info = "\n".join([
+                f"- Zone {row['zone']['name']} (Risk Score: {row['risk']:.1f}/100) -> Shelter: {row['shelter']['name']} (Distance: {row['distance_km']:.2f} km, Teams: {row['teams']}, Boats: {row['boats']})"
+                for row in plan
+            ])
+            
+        # Infrastructure counts
+        infra_types = {}
+        for item in self.current_infra:
+            t = item.get("type", "other")
+            infra_types[t] = infra_types.get(t, 0) + 1
+        infra_summary = ", ".join([f"{k}: {v}" for k, v in infra_types.items()])
+        
+        # Historical flood events
+        hist_events = ""
+        if self.current_history:
+            hist_events = "\n".join([
+                f"- Date: {h.get('date')}, Rainfall: {h.get('rainfall_mm')} mm, River Level: {h.get('river_level_m')} m, Flood Occurred: {'Yes' if h.get('flood_occurred') else 'No'}"
+                for h in self.current_history[-6:]
+            ])
+        else:
+            hist_events = "Information not available."
+
+        # Trend datasets
+        trend_info = ""
+        if hasattr(self, "trend_datasets") and self.trend_datasets:
+            trend_info = "\n".join([
+                f"- {d['meta']['Name']}: Current/latest value = {d['y'][-1]} {d['meta'].get('Units', '')} (Dataset range: {len(d['y'])} points)"
+                for d in self.trend_datasets
+            ])
+        else:
+            trend_info = "Information not available."
+            
+        # Active map layers
+        active_layers = []
+        if self.layer_population.isChecked(): active_layers.append("Population Density")
+        if self.layer_risk.isChecked(): active_layers.append("Flood Risk Contour Map")
+        if self.layer_elevation.isChecked(): active_layers.append("Elevation Contour Map")
+        if self.layer_history.isChecked(): active_layers.append("Historical Flood Extent")
+        if self.layer_infra.isChecked(): active_layers.append("Critical Infrastructure Locations")
+        if self.layer_evac.isChecked(): active_layers.append("Evacuation Points & Shelter Markers")
+        map_layer_analysis = ", ".join(active_layers) if active_layers else "None"
+        
+        # Scenario Sliders
+        sliders_str = (
+            f"Rainfall: {self.scenario_rainfall:.1f} mm (Offset: {self.rainfall_slider.value():+d}%)\n"
+            f"River Level: {self.scenario_river_level:.1f} m (Offset: {self.river_slider.value():+d}%)\n"
+            f"Temperature: {self.scenario_temperature:.1f} °C (Offset: {self.temp_slider.value():+d}%)\n"
+            f"Humidity: {self.scenario_humidity:.0f}% (Offset: {self.humidity_slider.value():+d}%)\n"
+            f"Wind Speed: {self.scenario_wind_speed:.1f} km/h (Offset: {self.wind_slider.value():+d}%)"
+        )
+        
+        # Highest Risk Zone
+        highest_risk_zone = "None"
         if self.zone_results:
             highest_zone_id = max(self.zone_results.items(), key=lambda x: x[1].score)[0]
             zone = next((z for z in self.current_zones if z["zone_id"] == highest_zone_id), None)
             if zone:
-                prompt += f"Highest Risk Zone: {zone['name']}\n"
+                highest_risk_zone = f"{zone['name']} (Risk Score: {self.zone_results[highest_zone_id].score:.1f}/100)"
                 
-        pop_risk = sum(z["population"] for z in self.current_zones if self.zone_scores.get(z["zone_id"], 0) > 50)
-        prompt += f"Population At Risk: {pop_risk}\n"
-        prompt += f"{weather}\n"
-        
-        prompt += f"Historical Flood Data: {len(self.current_history)} recent records available.\n"
-        
-        evac_summary = ""
-        if self.planner:
-            plan = self.planner.plan(self.zone_scores)
-            for p in plan:
-                evac_summary += f"Zone {p['zone']['name']} -> {p['shelter']['name']} (Priority: {alert_level(p['risk'])}). "
-        prompt += f"Evacuation Priorities: {evac_summary}\n"
-        
-        infra_summary = ", ".join([f"{i['name']} ({i['type']})" for i in self.current_infra[:10]])
-        prompt += f"Critical Infrastructure: {infra_summary}\n"
-        
+        # Latest Cached Data Timestamp
+        cached_timestamp = self.last_data_update.strftime('%d %b %Y, %H:%M:%S') if self.last_data_update else "N/A"
+
+        # Assemble live metrics
+        prompt += (
+            f"- Selected City: {city_name}\n"
+            f"- State: {state}\n"
+            f"- Coordinates: Latitude {lat}, Longitude {lon}\n"
+            f"- Base Elevation: {elevation:.1f} meters\n"
+            f"- Temperature: {self.scenario_temperature:.1f} °C (Baseline: {self.real_temperature:.1f} °C)\n"
+            f"- Humidity: {self.scenario_humidity:.1f}% (Baseline: {self.real_humidity:.1f}%)\n"
+            f"- Wind Speed: {self.scenario_wind_speed:.1f} km/h (Baseline: {self.real_wind_speed:.1f} km/h)\n"
+            f"- Rainfall: {self.scenario_rainfall:.1f} mm (Baseline: {self.real_rainfall:.1f} mm)\n"
+            f"- River Level: {self.scenario_river_level:.1f} m (Baseline: {self.real_river_level:.1f} m)\n"
+            f"- Alert Level: {alert_level(self.city_result.score)}\n"
+            f"- Flood Prone Area Score: {self.city_result.score:.1f}/100 (Confidence: {self.city_result.confidence_low:.1f} to {self.city_result.confidence_high:.1f})\n"
+            f"- Highest Risk Zone: {highest_risk_zone}\n"
+            f"- Population At Risk: {total_pop_at_risk:,}\n"
+            f"- Critical Infrastructure Count: {len(self.current_infra)} ({infra_summary})\n"
+            f"- Latest Cached Data Timestamp: {cached_timestamp}\n"
+            f"- Current Scenario Slider Values:\n{sliders_str}\n"
+            f"- Map Layer Analysis (Active GIS Layers): {map_layer_analysis}\n\n"
+            f"EVACUATION STATISTICS:\n"
+            f"- Rescue Teams Required: {total_teams}\n"
+            f"- Rescue Boats Required: {total_boats}\n"
+            f"- Active Shelters: {shelters_activated}\n"
+            f"- Estimated Evacuation Duration: {total_evac_time_hours:.1f} hours\n"
+            f"- Nearest Shelter Assignments:\n{shelter_info}\n\n"
+            f"HISTORICAL FLOOD EVENTS:\n{hist_events}\n\n"
+            f"CURRENT TREND DATA:\n{trend_info}\n"
+        )
         return prompt
 
     def ask_ai(self) -> None:
@@ -4648,7 +4862,7 @@ class FloodGuardWindow(QMainWindow):
             try:
                 response = requests.post(
                     "http://localhost:11434/api/chat",
-                    json={"model": model, "messages": payload_messages, "stream": False},
+                    json={"model": model, "messages": payload_messages, "stream": False, "keep_alive": -1},
                     timeout=45,
                 )
                 response.raise_for_status()

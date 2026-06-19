@@ -60,7 +60,9 @@ python train_model.py
 ```
 
 ### 4. Local AI Advisor Setup
-Ensure the Ollama application is running on your machine. FloodGuard is configured to auto-detect and pull the `qwen2.5:3b` model internally, but you can preload it manually:
+Ensure the Ollama application is installed on your machine. FloodGuard is configured to auto-detect and launch the Ollama service in the background, pull the `qwen2.5:3b` model if missing, preload it on startup, and keep it warm (`keep_alive: -1`) to avoid cold-start delays.
+
+To check model status or run it manually:
 ```bash
 ollama run qwen2.5:3b
 ```
@@ -75,7 +77,7 @@ python app.py
 ## 🛡️ Design Philosophy
 
 FloodGuard was constructed with strict adherence to **EOC Operational Design Guidelines**:
-- **Aesthetics**: Dark Slate, Teal, and High-Contrast Panels (`#0F1B2D`, `#2DD4BF`). No gamification, no excessive sci-fi gradients.
+- **Aesthetics**: Cream/Light operational palette (`background: #F8F6F2`, `panel: #FFFFFF`, `border: #D6D3D1`, `accent: #0F766E`, `text: #111827`, `muted: #6B7280`). No gamification, no excessive sci-fi gradients.
 - **Workflow**: Absolute separation of Live Intelligence from Scenario Testing.
 - **Authority**: The AI Advisor is locked into a professional persona and strictly forbidden from exposing its LLM nature.
 
