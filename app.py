@@ -2015,13 +2015,13 @@ class FloodGuardWindow(QMainWindow):
                     return True
             lu_naive = lu.replace(tzinfo=None) if lu.tzinfo else lu
             diff = datetime.now() - lu_naive
-            return diff.total_seconds() > 6 * 3600
+            return diff.total_seconds() > 5 * 60
 
         # Filter stale cities
         stale_cities = [c for c in cities if is_city_stale(c)]
         if not stale_cities:
             self.set_home_status(self.weather_status_card, "Connected", PALETTE["green"])
-            QMessageBox.information(self, "Refresh Complete", "All cached cities are up to date (updated within the last 6 hours).")
+            QMessageBox.information(self, "Refresh Complete", "All cached cities are up to date (updated within the last 5 minutes).")
             return
 
         # Set status cards
