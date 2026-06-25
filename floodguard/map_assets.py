@@ -31,3 +31,4 @@ def ensure_placeholder_maps(cities: list[dict]) -> None:
         draw.text((48, 102), "Calibrated placeholder map", fill=PALETTE["muted"], font=small)
         image.save(path)
 
+

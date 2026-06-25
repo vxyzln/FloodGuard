@@ -549,3 +549,4 @@ class CacheService:
         except Exception as e:
             logger.error(f"Refresh failure: refresh_all_cities failed: {e}")
             return 0
+

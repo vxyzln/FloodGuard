@@ -22,3 +22,4 @@ FloodGuard is designed to feel like a professional Emergency Operations Center (
 ## AI Advisor
 - Acts strictly as an Emergency Planning Assistant.
 - Suggests flood risk, weather explanations, evacuation tasks, and emergency warnings. No general chat.
+

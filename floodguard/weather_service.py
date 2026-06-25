@@ -57,3 +57,4 @@ class WeatherService:
             "daily_rainfall": [],
             "api_error": True
         }
+

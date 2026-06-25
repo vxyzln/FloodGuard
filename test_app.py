@@ -38,3 +38,4 @@ print("AI Chat Output:")
 print(window.ai_chat.toPlainText())
 
 sys.exit(0)
+

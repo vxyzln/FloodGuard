@@ -13,3 +13,4 @@ content = content.replace("color: {PALETTE['text']}; font-weight: bold; padding:
 
 with open("app.py", "w") as f:
     f.write(content)
+

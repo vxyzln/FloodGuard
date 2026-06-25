@@ -170,3 +170,4 @@ class CityService:
             "infrastructure": infrastructure,
             "history": history
         }
+

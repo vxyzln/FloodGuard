@@ -124,3 +124,4 @@ def build_seed_data() -> dict:
             )
     return result
 
+

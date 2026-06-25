@@ -44,3 +44,4 @@ class RiskService:
             "zone_results": zone_results,
             "city_result": city_res
         }
+

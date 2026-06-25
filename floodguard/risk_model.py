@@ -180,3 +180,4 @@ def city_score(zone_results: dict[int, RiskResult]) -> RiskResult:
     explanation = max(values, key=lambda r: r.score).explanation
     return RiskResult(score, low, high, pattern, discharge, values[0].rainfall_warning, explanation)
 
+

@@ -48,3 +48,4 @@ def execute(query: str, params: tuple = ()) -> None:
         cursor.execute(query, params)
         conn.commit()
         cursor.close()
+

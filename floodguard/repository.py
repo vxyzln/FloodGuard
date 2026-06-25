@@ -275,3 +275,4 @@ class FloodRepository:
             )
             conn.commit()
             cursor.close()
+
