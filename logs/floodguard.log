@@ -121,3 +121,79 @@
 2026-06-19 17:48:34 [WARNING] Weather API attempt 1 failed: HTTPSConnectionPool(host='api.open-meteo.com', port=443): Read timed out. (read timeout=5.0)
 2026-06-19 17:48:36 [INFO] Cache update: Successfully updated cache for city Varanasi (ID: 10)
 2026-06-19 17:48:36 [INFO] Refresh All: Completed successfully
+2026-06-19 17:58:03 [INFO] Online mode enabled
+2026-06-19 19:26:50 [INFO] Online mode enabled
+2026-06-19 19:57:50 [INFO] Online mode enabled
+2026-06-19 19:57:51 [INFO] Online mode disabled
+2026-06-19 20:00:25 [INFO] Online mode enabled
+2026-06-19 20:00:28 [INFO] Cache update: Successfully updated cache for city Ahmedabad (ID: 12)
+2026-06-19 20:00:28 [INFO] Cache update: Successfully updated cache for city Assam (ID: 1005)
+2026-06-19 20:00:34 [WARNING] Weather API attempt 1 failed: HTTPSConnectionPool(host='api.open-meteo.com', port=443): Read timed out. (read timeout=5.0)
+2026-06-19 20:00:35 [INFO] Cache update: Successfully updated cache for city Bengaluru (ID: 8)
+2026-06-19 20:00:36 [INFO] Cache update: Successfully updated cache for city Chennai (ID: 2)
+2026-06-19 20:00:36 [INFO] Cache update: Successfully updated cache for city Gandhinagar (ID: 1004)
+2026-06-19 20:00:37 [INFO] Cache update: Successfully updated cache for city Guwahati (ID: 5)
+2026-06-19 20:00:38 [INFO] Cache update: Successfully updated cache for city Hyderabad (ID: 9)
+2026-06-19 20:00:38 [INFO] Cache update: Successfully updated cache for city Kochi (ID: 7)
+2026-06-19 20:00:39 [INFO] Cache update: Successfully updated cache for city Kolkata (ID: 3)
+2026-06-19 20:00:39 [INFO] Cache update: Successfully updated cache for city Mumbai (ID: 1)
+2026-06-19 20:00:40 [INFO] Cache update: Successfully updated cache for city New Delhi (ID: 1006)
+2026-06-19 20:00:41 [INFO] Cache update: Successfully updated cache for city Patna (ID: 4)
+2026-06-19 20:00:41 [INFO] Cache update: Successfully updated cache for city Pune (ID: 11)
+2026-06-19 20:00:42 [INFO] Cache update: Successfully updated cache for city Surat (ID: 6)
+2026-06-19 20:00:43 [INFO] Cache update: Successfully updated cache for city Udhagamandalam (ID: 1001)
+2026-06-19 20:00:43 [INFO] Cache update: Successfully updated cache for city Vapi (ID: 1002)
+2026-06-19 20:00:44 [INFO] Cache update: Successfully updated cache for city Varanasi (ID: 10)
+2026-06-19 20:00:44 [INFO] Refresh All: Completed successfully
+2026-06-19 20:14:09 [INFO] Online mode enabled
+2026-06-19 20:14:12 [INFO] Cache update: Successfully updated cache for city Ahmedabad (ID: 12)
+2026-06-19 20:14:13 [INFO] Cache update: Successfully updated cache for city Assam (ID: 1005)
+2026-06-19 20:14:13 [INFO] Cache update: Successfully updated cache for city Bengaluru (ID: 8)
+2026-06-19 20:14:14 [INFO] Cache update: Successfully updated cache for city Chennai (ID: 2)
+2026-06-19 20:14:19 [WARNING] Weather API attempt 1 failed: HTTPSConnectionPool(host='api.open-meteo.com', port=443): Read timed out. (read timeout=5.0)
+2026-06-19 20:14:21 [INFO] Cache update: Successfully updated cache for city Gandhinagar (ID: 1004)
+2026-06-19 20:14:21 [INFO] Cache update: Successfully updated cache for city Guwahati (ID: 5)
+2026-06-19 20:14:22 [INFO] Cache update: Successfully updated cache for city Hyderabad (ID: 9)
+2026-06-19 20:14:22 [INFO] Cache update: Successfully updated cache for city Kochi (ID: 7)
+2026-06-19 20:14:23 [INFO] Cache update: Successfully updated cache for city Kolkata (ID: 3)
+2026-06-19 20:14:24 [INFO] Cache update: Successfully updated cache for city Kota (ID: 1003)
+2026-06-19 20:14:24 [INFO] Cache update: Successfully updated cache for city Mumbai (ID: 1)
+2026-06-19 20:14:25 [INFO] Cache update: Successfully updated cache for city New Delhi (ID: 1006)
+2026-06-19 20:14:25 [INFO] Cache update: Successfully updated cache for city Patna (ID: 4)
+2026-06-19 20:14:31 [WARNING] Weather API attempt 1 failed: HTTPSConnectionPool(host='api.open-meteo.com', port=443): Read timed out. (read timeout=5.0)
+2026-06-19 20:14:37 [WARNING] Weather API attempt 2 failed: HTTPSConnectionPool(host='api.open-meteo.com', port=443): Read timed out. (read timeout=5.0)
+2026-06-19 20:14:39 [INFO] Cache update: Successfully updated cache for city Pune (ID: 11)
+2026-06-19 20:14:40 [INFO] Cache update: Successfully updated cache for city Udhagamandalam (ID: 1001)
+2026-06-19 20:14:41 [INFO] Cache update: Successfully updated cache for city Vapi (ID: 1002)
+2026-06-19 20:14:41 [INFO] Cache update: Successfully updated cache for city Varanasi (ID: 10)
+2026-06-19 20:14:41 [INFO] Refresh All: Completed successfully
+2026-06-19 20:15:14 [ERROR] API failure: 1062 (23000): Duplicate entry 'Mumbai' for key 'cities.city'
+2026-06-19 20:15:33 [WARNING] Weather API attempt 1 failed: HTTPSConnectionPool(host='api.open-meteo.com', port=443): Read timed out. (read timeout=5.0)
+2026-06-19 20:15:36 [ERROR] API failure: 1062 (23000): Duplicate entry 'Mumbai' for key 'cities.city'
+2026-06-19 20:22:57 [INFO] Online mode enabled
+2026-06-19 20:23:00 [INFO] Cache update: Successfully updated cache for city Ahmedabad (ID: 12)
+2026-06-19 20:23:01 [INFO] Cache update: Successfully updated cache for city Assam (ID: 1005)
+2026-06-19 20:23:02 [INFO] Cache update: Successfully updated cache for city Bengaluru (ID: 8)
+2026-06-19 20:23:02 [INFO] Cache update: Successfully updated cache for city Chennai (ID: 2)
+2026-06-19 20:23:03 [INFO] Cache update: Successfully updated cache for city Gandhinagar (ID: 1004)
+2026-06-19 20:23:04 [INFO] Cache update: Successfully updated cache for city Guwahati (ID: 5)
+2026-06-19 20:23:04 [INFO] Cache update: Successfully updated cache for city Hyderabad (ID: 9)
+2026-06-19 20:23:09 [WARNING] Weather API attempt 1 failed: HTTPSConnectionPool(host='api.open-meteo.com', port=443): Read timed out. (read timeout=5.0)
+2026-06-19 20:23:11 [INFO] Cache update: Successfully updated cache for city Kochi (ID: 7)
+2026-06-19 20:23:12 [INFO] Cache update: Successfully updated cache for city Kolkata (ID: 3)
+2026-06-19 20:23:12 [INFO] Cache update: Successfully updated cache for city Kota (ID: 1003)
+2026-06-19 20:23:13 [INFO] Cache update: Successfully updated cache for city Mumbai (ID: 1)
+2026-06-19 20:23:13 [INFO] Cache update: Successfully updated cache for city New Delhi (ID: 1006)
+2026-06-19 20:23:19 [WARNING] Weather API attempt 1 failed: HTTPSConnectionPool(host='api.open-meteo.com', port=443): Read timed out. (read timeout=5.0)
+2026-06-19 20:23:20 [INFO] Cache update: Successfully updated cache for city Patna (ID: 4)
+2026-06-19 20:23:21 [INFO] Cache update: Successfully updated cache for city Pune (ID: 11)
+2026-06-19 20:23:21 [INFO] Cache update: Successfully updated cache for city Surat (ID: 6)
+2026-06-19 20:23:22 [INFO] Cache update: Successfully updated cache for city Udhagamandalam (ID: 1001)
+2026-06-19 20:23:23 [INFO] Cache update: Successfully updated cache for city Vapi (ID: 1002)
+2026-06-19 20:23:23 [INFO] Cache update: Successfully updated cache for city Varanasi (ID: 10)
+2026-06-19 20:23:23 [INFO] Refresh All: Completed successfully
+2026-06-19 20:25:30 [INFO] Online mode enabled
+2026-06-20 11:22:44 [INFO] Online mode enabled
+2026-06-20 11:22:44 [ERROR] API failure: No internet connection available.
+2026-06-20 11:22:44 [ERROR] API failure: No internet connection available.
+2026-06-20 11:24:46 [INFO] Online mode disabled
