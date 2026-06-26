@@ -4,5 +4,4 @@ __pycache__/
 venv/
 .venv/
 assets/seed_cache.json
-models/*.joblib
-
+logs/*.log

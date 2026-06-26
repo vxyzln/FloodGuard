@@ -3,7 +3,7 @@ from __future__ import annotations
 import requests
 
 
-def geocode_city(name: str, timeout: float = 5.0) -> dict:
+def geocode_city(name: str, timeout: float = 20.0) -> dict:
     url = "https://geocoding-api.open-meteo.com/v1/search"
     params = {"name": name, "count": 1, "language": "en", "format": "json"}
     response = requests.get(url, params=params, timeout=timeout)

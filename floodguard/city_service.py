@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 class CityService:
     @staticmethod
-    def geocode_city(name: str, timeout: float = 5.0) -> dict:
+    def geocode_city(name: str, timeout: float = 20.0) -> dict:
         """
         Geocodes a city using Nominatim OpenStreetMap API.
         Returns:
@@ -40,7 +40,7 @@ class CityService:
         }
 
     @staticmethod
-    def fetch_elevation(latitude: float, longitude: float, timeout: float = 5.0) -> float:
+    def fetch_elevation(latitude: float, longitude: float, timeout: float = 20.0) -> float:
         """
         Fetches the elevation for a coordinate from the Open-Meteo Elevation API.
         """

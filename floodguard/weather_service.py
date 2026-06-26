@@ -6,7 +6,7 @@ import logging
 
 class WeatherService:
     @staticmethod
-    def fetch_weather(latitude: float, longitude: float, timeout: float = 5.0) -> dict:
+    def fetch_weather(latitude: float, longitude: float, timeout: float = 20.0) -> dict:
         """
         Fetches current weather (rainfall, temperature, humidity, wind speed) from Open-Meteo API.
         Includes 3 retries with exponential backoff. Returns fallback if totally unavailable.
