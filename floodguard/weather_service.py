@@ -58,3 +58,4 @@ class WeatherService:
             "api_error": True
         }
 
+ 

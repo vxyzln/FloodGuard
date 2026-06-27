@@ -38,3 +38,4 @@ def fetch_open_meteo(latitude: float, longitude: float, timeout: float = 4.0) ->
     daily_rain = daily.get("rain_sum") or []
     return {"rainfall_mm": rainfall, "daily_rainfall": [float(v or 0) for v in daily_rain]}
 
+ 

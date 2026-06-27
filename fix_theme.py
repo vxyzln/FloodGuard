@@ -26,3 +26,4 @@ content = content.replace('background-color: #FFFFFF;', 'background-color: {PALE
 with open("app.py", "w") as f:
     f.write(content)
 
+ 

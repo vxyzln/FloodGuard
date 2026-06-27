@@ -5,3 +5,4 @@ venv/
 .venv/
 assets/seed_cache.json
 logs/*.log
+ 

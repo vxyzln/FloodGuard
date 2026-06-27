@@ -550,3 +550,4 @@ class CacheService:
             logger.error(f"Refresh failure: refresh_all_cities failed: {e}")
             return 0
 
+ 

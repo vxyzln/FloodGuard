@@ -45,3 +45,4 @@ class RiskService:
             "city_result": city_res
         }
 
+ 

@@ -12,3 +12,4 @@ PyQt6
 folium
 PyQt6-WebEngine
 
+ 

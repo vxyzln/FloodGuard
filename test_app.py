@@ -39,3 +39,4 @@ print(window.ai_chat.toPlainText())
 
 sys.exit(0)
 
+ 

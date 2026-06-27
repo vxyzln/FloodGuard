@@ -92,3 +92,4 @@ class EvacuationPlanner:
         return sorted(rows, key=lambda row: row["priority_score"], reverse=True)
 
 
+ 

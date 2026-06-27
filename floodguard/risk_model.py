@@ -181,3 +181,4 @@ def city_score(zone_results: dict[int, RiskResult]) -> RiskResult:
     return RiskResult(score, low, high, pattern, discharge, values[0].rainfall_warning, explanation)
 
 
+ 
