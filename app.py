@@ -46,7 +46,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QShortcut, QKeySequence
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
-
+from PyQt6.QtWebChannel import QWebChannel
+from PyQt6.QtCore import pyqtSlot
 from floodguard.config import CACHE_PATH, MODEL_PATH, PALETTE, ROOT
 from floodguard.evacuation import EvacuationPlanner
 from floodguard.map_assets import ensure_placeholder_maps
@@ -56,6 +57,7 @@ from floodguard.city_service import CityService
 from floodguard.weather_service import WeatherService
 from floodguard.cache_service import CacheService
 from floodguard.risk_service import RiskService
+from floodguard.routing_service import RoutingService
 
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -551,6 +553,12 @@ class AlertDetailsDialog(QDialog):
         else:
             super().keyPressEvent(event)
 
+class MapInteractionBridge(QObject):
+    click_signal = pyqtSignal(float, float)
+    
+    @pyqtSlot(float, float)
+    def on_map_clicked(self, lat: float, lon: float):
+        self.click_signal.emit(lat, lon)
 
 class FloodGuardWindow(QMainWindow):
     def __init__(self) -> None:
@@ -1586,6 +1594,13 @@ class FloodGuardWindow(QMainWindow):
         self.route_view = QWebEngineView()
         self.route_view.setMinimumHeight(380)
         self.route_view.setPage(QuietWebEnginePage(self.route_view))
+        
+        self.web_channel = QWebChannel()
+        self.map_bridge = MapInteractionBridge()
+        self.map_bridge.click_signal.connect(self.handle_evacuation_map_click)
+        self.web_channel.registerObject("bridge", self.map_bridge)
+        self.route_view.page().setWebChannel(self.web_channel)
+        
         route_layout.addWidget(self.route_view, 1)
         
         # Selected Route Details Card below the map
@@ -1612,58 +1627,6 @@ class FloodGuardWindow(QMainWindow):
         
         right_col.addWidget(route_card, 1)
         
-        # SECTION 5 & SECTION 9: WHY THIS ROUTE? & ROUTE SELECTION ENGINE
-        bottom_right_row = QHBoxLayout()
-        bottom_right_row.setSpacing(18)
-        
-        # WHY THIS ROUTE? Card
-        why_card = QFrame()
-        why_card.setObjectName("EvacCard")
-        why_layout = QVBoxLayout(why_card)
-        why_layout.setContentsMargins(18, 16, 18, 18)
-        why_layout.setSpacing(10)
-        why_title = QLabel("WHY THIS ROUTE?")
-        why_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
-        why_layout.addWidget(why_title)
-        why_desc = QLabel(
-            "Selected using Dijkstra shortest-path algorithm.\n\n"
-            "Factors:\n"
-            "• Shortest distance to target shelter\n"
-            "• Active shelter capacity available\n"
-            "• Lowest estimated travel time\n"
-            "• Dynamic avoidance of flooded areas"
-        )
-        why_desc.setWordWrap(True)
-        why_desc.setStyleSheet(f"font-size: 13px; line-height: 1.4; color: {PALETTE['text']};")
-        why_layout.addWidget(why_desc)
-        bottom_right_row.addWidget(why_card, 1)
-        
-        # Route Selection Engine Card (Dijkstra educational)
-        dijk_card = QFrame()
-        dijk_card.setObjectName("EvacCard")
-        dijk_layout = QVBoxLayout(dijk_card)
-        dijk_layout.setContentsMargins(18, 16, 18, 18)
-        dijk_layout.setSpacing(10)
-        dijk_title = QLabel("ROUTE SELECTION ENGINE")
-        dijk_title.setStyleSheet(f'font-family: "SF Pro Text"; font-size: 13px; font-weight: bold; color: {PALETTE["muted"]}; letter-spacing: 1.2px;')
-        dijk_layout.addWidget(dijk_title)
-        dijk_desc = QLabel(
-            "FloodGuard uses NetworkX and Dijkstra's shortest-path algorithm to identify the safest evacuation route between flood-prone zones and available shelters."
-        )
-        dijk_desc.setWordWrap(True)
-        dijk_desc.setStyleSheet(f"font-size: 13px; line-height: 1.4; color: {PALETTE['text']};")
-        dijk_layout.addWidget(dijk_desc)
-        
-        dijk_flow = QLabel(
-            "<b>Input:</b> Zone Location<br>"
-            "<b>Process:</b> Shortest Path Calculation<br>"
-            "<b>Output:</b> Recommended Evacuation Route"
-        )
-        dijk_flow.setStyleSheet(f"font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; color: {PALETTE['accent']}; line-height: 1.4;")
-        dijk_layout.addWidget(dijk_flow)
-        bottom_right_row.addWidget(dijk_card, 1)
-        
-        right_col.addLayout(bottom_right_row)
         row2.addLayout(right_col, 6)
         layout.addLayout(row2)
         
@@ -3838,7 +3801,6 @@ class FloodGuardWindow(QMainWindow):
             folium.Marker(
                 location=[lat, lon],
                 icon=folium.Icon(color="green", icon="home"),
-                tooltip=f"Shelter: {shelter['name']}",
                 popup=f"<b>Shelter:</b> {shelter['name']}<br><b>Capacity:</b> {shelter['capacity']}<br><b>Occupancy:</b> {shelter['current_occupancy']}"
             ).add_to(m)
             
@@ -3881,7 +3843,6 @@ class FloodGuardWindow(QMainWindow):
                     weight=5,
                     opacity=0.85,
                     dash_array="10",
-                    tooltip=f"Route: {row['zone']['name']} → {row['shelter']['name']}",
                     popup=folium.Popup(popup_html, max_width=250)
                 ).add_to(m)
         
@@ -3889,6 +3850,50 @@ class FloodGuardWindow(QMainWindow):
             m.fit_bounds(bounds)
                 
         html = m.get_root().render()
+        
+        injection = """
+        <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+        <script>
+            document.addEventListener("DOMContentLoaded", function() {
+                new QWebChannel(qt.webChannelTransport, function(channel) {
+                    window.bridge = channel.objects.bridge;
+                    // Find the leaflet map object
+                    for (var key in window) {
+                        if (key.startsWith("map_") && window[key] instanceof L.Map) {
+                            var mapObj = window[key];
+                            window._floodguardMap = mapObj;
+                            
+                            // Initialize map drawing functions
+                            window.evacuationLayer = null;
+                            window.markerLayer = null;
+                            
+                            window.drawEvacRoute = function(geojson_str) {
+                                if (window.evacuationLayer) { window._floodguardMap.removeLayer(window.evacuationLayer); }
+                                var geojson = JSON.parse(geojson_str);
+                                window.evacuationLayer = L.geoJSON(geojson, {
+                                    style: { color: 'blue', weight: 5, opacity: 0.8 }
+                                }).addTo(window._floodguardMap);
+                            };
+                            
+                            window.drawClickMarker = function(lat, lon) {
+                                if (window.markerLayer) { window._floodguardMap.removeLayer(window.markerLayer); }
+                                window.markerLayer = L.circleMarker([lat, lon], {
+                                    radius: 6, color: 'blue', fillColor: 'blue', fillOpacity: 1
+                                }).addTo(window._floodguardMap);
+                            };
+
+                            mapObj.on('click', function(e) {
+                                window.drawClickMarker(e.latlng.lat, e.latlng.lng);
+                                window.bridge.on_map_clicked(e.latlng.lat, e.latlng.lng);
+                            });
+                            break;
+                        }
+                    }
+                });
+            });
+        </script>
+        """
+        html = html.replace('</body>', injection + '</body>')
         self.route_view.setHtml(html)
 
 
@@ -4884,6 +4889,124 @@ class FloodGuardWindow(QMainWindow):
         self.run_background(task, success, failed)
 
 
+    def handle_evacuation_map_click(self, lat: float, lon: float) -> None:
+        if not self.current_zones:
+            return
+            
+        def task() -> dict:
+            import json
+            import math
+            
+            # Snap to road
+            snapped = RoutingService.get_nearest_road(lat, lon)
+            if not snapped:
+                return {"error": "Could not snap to road network."}
+                
+            snap_lat, snap_lon = snapped
+            
+            # Find best shelter
+            best_shelter, route_info = RoutingService.find_best_shelter(snap_lat, snap_lon, self.current_shelters)
+            if not best_shelter or not route_info:
+                return {"error": "No reachable shelter found."}
+                
+            # Estimate Risk & Population based on nearest zone
+            def distance(lat1, lon1, lat2, lon2):
+                return ((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5
+                
+            nearest_zone = min(
+                self.current_zones,
+                key=lambda z: distance(lat, lon, float(z["latitude"]), float(z["longitude"]))
+            )
+            score = self.zone_scores.get(int(nearest_zone["zone_id"]), 0.0)
+            population = int(nearest_zone["population"])
+            
+            # Distance in km
+            dist = route_info["distance_km"]
+            priority = score * population / max(dist, 0.25)
+            
+            teams = max(1, math.ceil(priority / 75000))
+            boats = max(0, math.ceil((score - 55) / 18)) if score > 55 else 0
+            travel_time_min = max(5, int(dist * 6.0 + (population / 3000.0) * 4.0))
+            
+            return {
+                "lat": snap_lat,
+                "lon": snap_lon,
+                "score": score,
+                "population": population,
+                "shelter": best_shelter,
+                "route_info": route_info,
+                "dist": dist,
+                "teams": teams,
+                "boats": boats,
+                "travel_time_min": travel_time_min
+            }
+            
+        def success(payload: dict) -> None:
+            if "error" in payload:
+                return
+                
+            # Draw route and marker
+            import json
+            geojson_str = json.dumps(payload["route_info"]["geojson"])
+            self.route_view.page().runJavaScript(f"window.drawEvacRoute('{geojson_str}');")
+            self.route_view.page().runJavaScript(f"window.drawClickMarker({payload['lat']}, {payload['lon']});")
+            
+            # Update MOST CRITICAL ZONE panel
+            self.critical_zone_name.setText("Selected Point")
+            self.critical_zone_pop.setText(f"{payload['population']:,}")
+            self.critical_zone_risk.setText(f"{payload['score']:.1f} / 100")
+            
+            score = payload['score']
+            if score >= 90:
+                self.critical_zone_risk.setStyleSheet(f"color: {PALETTE['red']}; font-weight: bold;")
+                self.critical_zone_reco.setText("Immediate evacuation recommended! Secure life support assets and route to highest ground.")
+            elif score >= 70:
+                self.critical_zone_risk.setStyleSheet(f"color: {PALETTE['orange']}; font-weight: bold;")
+                self.critical_zone_reco.setText("Prepare evacuation operations. Monitor water level indicators closely.")
+            elif score >= 50:
+                self.critical_zone_risk.setStyleSheet(f"color: {PALETTE['yellow']}; font-weight: bold;")
+                self.critical_zone_reco.setText("Standby alert. Pre-position assets near vulnerable corridors.")
+            else:
+                self.critical_zone_risk.setStyleSheet(f"color: {PALETTE['green']}; font-weight: bold;")
+                self.critical_zone_reco.setText("Standard monitoring. No immediate action required.")
+                
+            self.critical_zone_shelter.setText(payload['shelter']['name'])
+            self.critical_zone_dist.setText(f"{payload['dist']:.1f} km")
+            self.critical_zone_teams.setText(str(payload['teams']))
+            self.critical_zone_boats.setText(str(payload['boats']))
+            self.critical_zone_time.setText(f"{payload['travel_time_min']} min")
+            
+            # Update RESOURCE ALLOCATION panel
+            med_teams = max(1, payload['teams'] // 2)
+            veh = payload['teams'] * 2
+            self.res_teams_label.setText(str(payload['teams']))
+            self.res_boats_label.setText(str(payload['boats']))
+            self.res_med_label.setText(str(med_teams))
+            self.res_veh_label.setText(str(veh))
+            self.res_shelters_label.setText("1")
+            
+            # Update Route detail frame
+            self.route_detail_path.setText(f"Selected Point → {payload['shelter']['name']}")
+            self.route_detail_dist.setText(f"📏 {payload['dist']:.1f} km")
+            self.route_detail_time.setText(f"⏱️ {payload['travel_time_min']} min")
+            if score > 80:
+                self.route_detail_safety.setText("High Risk Route")
+                self.route_detail_safety.setStyleSheet(f"color: {PALETTE['red']}; font-weight: bold;")
+            else:
+                self.route_detail_safety.setText("Safe Route")
+                self.route_detail_safety.setStyleSheet(f"color: {PALETTE['green']}; font-weight: bold;")
+                
+            # Update COMMANDER RECOMMENDATION panel
+            self.commander_briefing_label.setText(
+                f"Operational decision support for clicked location:\n"
+                f"Nearest active shelter is {payload['shelter']['name']} at a road distance of {payload['dist']:.1f}km. "
+                f"Estimated travel time is {payload['travel_time_min']} minutes. "
+                f"Assigning {payload['teams']} rescue teams and {payload['boats']} boats based on localized risk."
+            )
+
+        self.run_background(task, success)
+
+
 def ensure_startup_assets() -> None:
     data = build_seed_data()
     if not CACHE_PATH.exists():
@@ -4900,8 +5023,6 @@ def clear_layout(layout: QVBoxLayout) -> None:
         widget = item.widget()
         if widget:
             widget.deleteLater()
-
-
 def alert_color(level: str) -> str:
     return {
         "Green": PALETTE["green"],
