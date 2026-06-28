@@ -107,19 +107,62 @@ def build_seed_data() -> dict:
                 }
             )
 
-        city_rain_bias = 35 if name in {"Mumbai", "Kochi", "Guwahati"} else 22
+        # Define climate profile for the city
+        if name in {"Mumbai", "Kochi", "Guwahati", "Surat"}:
+            rain_prob_base = 0.35
+            rain_intensity = 35.0
+            river_base = 2.5
+        elif name in {"Chennai", "Kolkata", "Patna"}:
+            rain_prob_base = 0.25
+            rain_intensity = 25.0
+            river_base = 2.0
+        else:
+            # Inland / Drier cities (Bengaluru, Hyderabad, Varanasi)
+            rain_prob_base = 0.15
+            rain_intensity = 15.0
+            river_base = 1.5
+            
+        current_river = river_base
+        consecutive_rain_days = 0
+        history_forward = []
+        
+        # Generate 90 days forward using Markov Chain and Hydrological Accumulation
+        for i in range(90):
+            # Markov chain: raining yesterday increases chance of rain today
+            prob_rain = rain_prob_base + (0.4 if consecutive_rain_days > 0 else 0)
+            
+            if random.random() < prob_rain:
+                consecutive_rain_days += 1
+                # Rainfall follows a log-normal distribution for realistic right-skewed heavy events
+                rainfall = random.lognormvariate(math.log(rain_intensity), 0.8)
+                rainfall = min(rainfall, 300.0) # Cap extreme outliers
+            else:
+                consecutive_rain_days = 0
+                rainfall = 0.0
+                
+            # River accumulation and discharge
+            discharge_rate = 0.15 * current_river
+            runoff = (rainfall / 40.0) * (1.0 + min(consecutive_rain_days, 5) * 0.15)
+            current_river = max(river_base, current_river - discharge_rate + runoff)
+            
+            # Physics-inspired label for historical flood
+            flood = rainfall > 80 or current_river > (river_base * 2.2)
+            
+            history_forward.append({
+                "rainfall_mm": round(rainfall, 2),
+                "river_level_m": round(current_river, 2),
+                "flood_occurred": bool(flood)
+            })
+            
         for days_ago in range(90, 0, -1):
-            seasonal_wave = 0.5 + 0.5 * math.sin(days_ago / 7)
-            rainfall = max(0, random.gauss(city_rain_bias * seasonal_wave, 18))
-            river = max(1.5, random.gauss(3.2 + rainfall / 70, 0.55))
-            flood = rainfall > 70 or river > 4.6 or (rainfall > 48 and river > 3.8)
+            hw = history_forward[90 - days_ago]
             result["rainfall_river_history"].append(
                 {
                     "city_id": city_id,
                     "date": (today - timedelta(days=days_ago)).isoformat(),
-                    "rainfall_mm": round(rainfall, 2),
-                    "river_level_m": round(river, 2),
-                    "flood_occurred": bool(flood),
+                    "rainfall_mm": hw["rainfall_mm"],
+                    "river_level_m": hw["river_level_m"],
+                    "flood_occurred": hw["flood_occurred"],
                 }
             )
     return result

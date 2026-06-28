@@ -32,18 +32,35 @@ def train_and_save_model(history_rows: list[dict]) -> None:
     rng = np.random.default_rng(7)
     synthetic = []
     for _, row in df.iterrows():
-        for _ in range(2):
-            rainfall = max(0, float(row["rainfall_mm"]) + rng.normal(0, 10))
-            river = max(0.5, float(row["river_level_m"]) + rng.normal(0, 0.28))
+        for _ in range(4): # Increase dataset size slightly
+            # Keep rainfall/river closely correlated to the Markov chain history
+            rainfall = max(0, float(row["rainfall_mm"]) + rng.normal(0, 5))
+            river = max(0.5, float(row["river_level_m"]) + rng.normal(0, 0.15))
             elevation = max(1, rng.normal(24, 22))
             flood_freq = min(0.95, max(0.05, rng.normal(0.42, 0.18)))
-            target = (
-                rainfall * 0.45
-                + river * 11.5
-                + (60 - min(elevation, 60)) * 0.35
-                + flood_freq * 28
-                + (18 if bool(row["flood_occurred"]) else 0)
-            )
+            
+            # Physics-inspired labeling logic
+            # Capacity of the zone to handle water
+            drainage_capacity = (elevation / 80.0) + (1.0 - flood_freq) * 0.5 
+            
+            # Stress placed on the zone by weather and water bodies
+            rain_stress = rainfall / 100.0  # Normalized against heavy 100mm event
+            river_stress = max(0, (river - 2.0)) / 3.0 # Stress increases sharply as river rises
+            
+            total_stress = rain_stress + river_stress
+            
+            # Risk is a non-linear response to stress overwhelming capacity
+            risk_ratio = total_stress / (drainage_capacity + 0.1) 
+            target = risk_ratio * 30.0
+            
+            # Elevation penalty: Water pools violently in very low areas
+            if elevation < 10:
+                target += (10 - elevation) * 3
+                
+            # Baseline risk bump if history showed a flood
+            if bool(row["flood_occurred"]):
+                target += 15
+                
             synthetic.append(
                 {
                     "rainfall_mm": rainfall,
