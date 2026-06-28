@@ -50,3 +50,4 @@ def execute(query: str, params: tuple = ()) -> None:
         cursor.close()
 
  
+

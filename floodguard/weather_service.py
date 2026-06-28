@@ -133,3 +133,4 @@ class WeatherService:
         if last_exception:
             raise last_exception
         raise WeatherServiceError("Weather Service Unavailable")
+

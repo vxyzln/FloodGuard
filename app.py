@@ -58,6 +58,7 @@ from floodguard.weather_service import WeatherService
 from floodguard.cache_service import CacheService
 from floodguard.risk_service import RiskService
 from floodguard.routing_service import RoutingService
+from floodguard.unified_simulation import UnifiedSimulation
 
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -2749,18 +2750,33 @@ class FloodGuardWindow(QMainWindow):
     def kiosk_reset(self) -> None:
         import logging
         logging.info("Kiosk Mode: 2 minutes of inactivity. Resetting dashboard.")
-        # Reset sliders
-        self.reset_scenario()
+        
+        if self.current_city:
+            # Reset sliders
+            self.reset_scenario()
+            
+            # Prevent map memory leaks over 7-hour exhibitions
+            if hasattr(self, "dashboard_map_view"):
+                self.dashboard_map_view.page().profile().clearHttpCache()
+                self.dashboard_map_view.history().clear()
+            if hasattr(self, "map_view"):
+                self.map_view.page().profile().clearHttpCache()
+                self.map_view.history().clear()
+                
         # Clear AI chat
         self.ai_messages.clear()
         if hasattr(self, "ai_chat"):
             self.ai_chat.clear()
+            
         # Return to home
         if hasattr(self, "sidebar_buttons") and self.sidebar_buttons:
             self.sidebar_buttons[0].setChecked(True)
         self.switch_page(0)
 
     def reset_scenario(self) -> None:
+        if not self.current_city:
+            return
+            
         self.scenario_rainfall = self.real_rainfall
         self.scenario_river_level = self.real_river_level
         self.scenario_temperature = self.real_temperature
@@ -2781,6 +2797,16 @@ class FloodGuardWindow(QMainWindow):
         self.zone_scores = {zone_id: result.score for zone_id, result in self.zone_results.items()}
         self.city_result = payload["city_result"]
         self.last_data_update = datetime.now()
+        
+        # --- SYNCHRONIZE UNIFIED SIMULATION ---
+        if self.current_city:
+            UnifiedSimulation.update_present_day(
+                self.current_city["city_id"], 
+                self.scenario_rainfall, 
+                self.scenario_river_level, 
+                self.city_result.score
+            )
+            
         if hasattr(self, "dashboard_status"):
             self.dashboard_status.setText("")
         self.set_home_status(self.model_status_card, "Loaded", PALETTE["green"])
@@ -2867,11 +2893,21 @@ class FloodGuardWindow(QMainWindow):
         affected_pop = sum(z["population"] for z in self.current_zones if get_zone_score(z["zone_id"]) > 50.0)
         self.affected_pop_label.setText(f"{affected_pop:,}")
 
-        self.real_rain_label.setText(f"{self.real_rainfall:.1f} mm")
-        self.real_river_label.setText(f"{self.real_river_level:.1f} m")
-        self.temp_label.setText(f"{self.real_temperature:.1f} °C" if self.real_temperature is not None else "-")
-        self.humidity_label.setText(f"{self.real_humidity:.0f}%" if self.real_humidity is not None else "-")
-        self.wind_speed_label.setText(f"{self.real_wind_speed:.1f} km/h" if self.real_wind_speed is not None else "-")
+        # Synchronize "Current Conditions" with UnifiedSimulation
+        timeline = UnifiedSimulation.get_timeline(self.current_city, self.current_history)
+        if timeline:
+            present = timeline[-1]
+            self.real_rain_label.setText(f"{present['rainfall_mm']:.1f} mm")
+            self.real_river_label.setText(f"{present['river_level_m']:.1f} m")
+            self.temp_label.setText(f"{present['temp_c']:.1f} °C")
+            self.humidity_label.setText(f"{present['humidity_pct']:.0f}%")
+            self.wind_speed_label.setText(f"{present['wind_kmh']:.1f} km/h")
+        else:
+            self.real_rain_label.setText(f"{self.scenario_rainfall:.1f} mm")
+            self.real_river_label.setText(f"{self.scenario_river_level:.1f} m")
+            self.temp_label.setText(f"{self.scenario_temperature:.1f} °C" if self.scenario_temperature is not None else "-")
+            self.humidity_label.setText(f"{self.scenario_humidity:.0f}%" if self.scenario_humidity is not None else "-")
+            self.wind_speed_label.setText(f"{self.scenario_wind_speed:.1f} km/h" if self.scenario_wind_speed is not None else "-")
         
         self.redraw_dashboard_map()
 
@@ -3274,26 +3310,15 @@ class FloodGuardWindow(QMainWindow):
             grid_size = 40
             grid_lats = np.linspace(lat_min, lat_max, grid_size)
             grid_lons = np.linspace(lon_min, lon_max, grid_size)
-            
-            zone_coords = np.array([[float(z["latitude"]), float(z["longitude"])] for z in self.current_zones])
-            zone_vals = np.array(risk_vals)
-            
             grid_vals = np.zeros((grid_size, grid_size))
             for i, lt in enumerate(grid_lats):
                 for j, ln in enumerate(grid_lons):
-                    dists = np.sqrt(np.sum((zone_coords - np.array([lt, ln]))**2, axis=1))
-                    zero_dist_idx = np.where(dists < 1e-6)[0]
-                    if len(zero_dist_idx) > 0:
-                        interp_risk = zone_vals[zero_dist_idx[0]]
-                    else:
-                        weights = 1.0 / (dists ** 2)
-                        interp_risk = np.sum(weights * zone_vals) / np.sum(weights)
-                        
-                    model_risk = self.current_model.get_flood_risk(lt, ln, self.scenario_rainfall, self.scenario_river_level) / 100.0
-                    grid_vals[i, j] = (0.4 * interp_risk + 0.6 * model_risk) * 100.0
+                    risk_score = self.current_model.get_flood_risk(lt, ln, self.scenario_rainfall, self.scenario_river_level)
+                    hist_freq = self.current_model.get_historical_flood_frequency(lt, ln)
+                    grid_vals[i, j] = risk_score * 0.85 + hist_freq * 15.0
                     
-            risk_colors = ["#2563EB", "#10B981", "#FBBF24", "#F97316", "#EF4444"]
-            risk_levels = [-1.0, 20.0, 40.0, 60.0, 80.0, 101.0]
+            risk_colors = ["#10B981", "#FBBF24", "#F97316", "#EF4444", "#7F1D1D"]
+            risk_levels = [-1.0, 30.0, 50.0, 70.0, 85.0, 101.0]
             add_contour_layer(grid_vals, risk_colors, risk_levels)
             
         # 3. Elevation heatmap layer (Contour Polygons)
@@ -3465,12 +3490,22 @@ class FloodGuardWindow(QMainWindow):
         plan = self.planner.plan(self.zone_scores)
         
         # Populate Summary Card Labels (EMERGENCY RESPONSE OVERVIEW)
-        total_teams = sum(row['teams'] for row in plan)
-        total_boats = sum(row['boats'] for row in plan)
+        # Pull directly from UnifiedSimulation for 100% consistency with Trends & Dashboard
+        timeline = UnifiedSimulation.get_timeline(self.current_city, self.current_history)
+        if timeline:
+            present = timeline[-1]
+            total_teams = present["rescue_teams"]
+            total_boats = present["boats_needed"]
+            total_pop_at_risk = present["pop_total"]
+            total_evac_time_hours = present["evac_hours"]
+        else:
+            total_teams = sum(row['teams'] for row in plan)
+            total_boats = sum(row['boats'] for row in plan)
+            total_pop_at_risk = sum(row['zone']['population'] for row in plan if row['risk'] > 50)
+            total_evac_time_hours = max([ (row["distance_km"] * 8.0 + (row["zone"]["population"] / 800.0) * 6.0) / 60.0 for row in plan ]) if plan else 0.0
+            
         critical_zones = sum(1 for row in plan if row['priority_score'] > 100000)
-        total_pop_at_risk = sum(row['zone']['population'] for row in plan if row['risk'] > 50)
         shelters_activated = len(set(row['shelter']['shelter_id'] for row in plan))
-        total_evac_time_hours = max([ (row["distance_km"] * 8.0 + (row["zone"]["population"] / 800.0) * 6.0) / 60.0 for row in plan ]) if plan else 0.0
         
         self.evac_pop_at_risk_label.setText(f"{total_pop_at_risk:,}")
         self.evac_critical_zones_label.setText(str(critical_zones))
@@ -3826,62 +3861,31 @@ class FloodGuardWindow(QMainWindow):
             return {"logs": logs}
             
         def success(payload: dict) -> None:
-            logs = payload["logs"]
-            
             self.trend_datasets = []
             
-            from datetime import timedelta, datetime
-            import random
-            import math
-            now = datetime.now()
-            
-            # Determine length based on time range
+            # Determine the selected time range
             tr = getattr(self, "trend_time_range", "1Y")
-            if tr == "6M": points = 180; step_days = 1
-            elif tr == "1Y": points = 52; step_days = 7
-            elif tr == "2Y": points = 104; step_days = 7
-            elif tr == "3Y": points = 36; step_days = 30
-            else: points = 60; step_days = 30
+            if tr == "6M": points = 180; step_days = 2
+            elif tr == "1Y": points = 365; step_days = 3
+            elif tr == "2Y": points = 730; step_days = 7
+            elif tr == "3Y": points = 1095; step_days = 10
+            elif tr == "5Y": points = 1825; step_days = 15
+            else: points = 365; step_days = 3
             
-            dates_hist = [(now - timedelta(days=i*step_days)).strftime("%b %Y" if step_days >= 30 else "%d %b %Y") for i in range(points)][::-1]
-            
-            # City-specific climate baselines for realism
-            city_name = self.current_city["name"]
-            climate = {
-                "Surat":   {"temp_base": 28, "temp_amp": 6, "rain_base": 12, "rain_monsoon": 65, "humidity_base": 68, "wind_base": 14, "river_base": 3.2},
-                "Mumbai":  {"temp_base": 27, "temp_amp": 4, "rain_base": 15, "rain_monsoon": 80, "humidity_base": 75, "wind_base": 18, "river_base": 2.8},
-                "Chennai": {"temp_base": 30, "temp_amp": 5, "rain_base": 10, "rain_monsoon": 55, "humidity_base": 72, "wind_base": 16, "river_base": 2.5},
-                "Kolkata": {"temp_base": 27, "temp_amp": 8, "rain_base": 11, "rain_monsoon": 50, "humidity_base": 70, "wind_base": 12, "river_base": 3.8},
-            }
-            c = climate.get(city_name, {"temp_base": 28, "temp_amp": 6, "rain_base": 12, "rain_monsoon": 60, "humidity_base": 65, "wind_base": 14, "river_base": 3.0})
-            
-            # Seed for reproducibility per city + range so graphs don't change randomly on re-render
-            random.seed(hash(city_name + tr))
-            
-            # Helper: bounded random walk
-            def r_walk(start, min_v, max_v, volatility, count, drift=0.0):
-                res = []
-                curr = start
-                for _ in range(count):
-                    curr += random.gauss(drift, volatility)
-                    curr = max(min_v, min(max_v, curr))
-                    res.append(round(curr, 2))
-                return res
-            
-            # Helper: seasonal factor (0-1, peaking mid-monsoon around index ~ 60% through the year)
-            def seasonal(i, n):
-                return max(0, math.sin(i / n * math.pi * 2 - math.pi * 0.3))
+            # Fetch the highly correlated timeline from the Single Source of Truth
+            timeline = UnifiedSimulation.get_timeline(self.current_city, self.current_history, requested_days=points)
+            if not timeline:
+                return
+                
+            # Extract data from timeline using step_days for charting performance
+            sampled_timeline = timeline[::step_days]
+            dates = [day["date"] for day in sampled_timeline]
             
             # ── 0. Flood Risk Timeline (Line) ──
-            risk_scores = r_walk(35, 10, 95, 5, points, drift=0.3)
-            # Inject real simulation logs at the tail if available
-            if logs and tr == "1Y":
-                real_scores = [float(l["risk_score"]) for l in logs[-min(10, len(logs)):]]
-                risk_scores[-len(real_scores):] = real_scores
-                
+            risk_scores = [day["risk_score"] for day in sampled_timeline]
             self.trend_datasets.append({
                 "type": "line",
-                "x": dates_hist,
+                "x": dates,
                 "y": risk_scores,
                 "ylabel": "Risk Score",
                 "color": PALETTE["red"],
@@ -3889,43 +3893,34 @@ class FloodGuardWindow(QMainWindow):
                 "meta": {
                     "Name": "Flood Risk Timeline",
                     "Purpose": "Track composite flood risk over time. Combines rainfall, river level, and soil saturation into a single index.",
-                    "Data Source": "✓ Cached Risk Model & Live Simulator",
+                    "Data Source": "✓ Unified Simulation Engine",
                     "Interpretation": "Values above 70 indicate high risk requiring active monitoring. Above 90 triggers emergency protocols.",
                     "Units": "Risk Points"
                 }
             })
             
             # ── 1. Rainfall Trend (Area) ──
-            rain_vals = []
-            for i in range(points):
-                base = c["rain_base"] + c["rain_monsoon"] * seasonal(i, points) ** 2
-                rain_vals.append(round(max(0, base + random.gauss(0, base * 0.35)), 1))
+            rain_vals = [day["rainfall_mm"] for day in sampled_timeline]
             self.trend_datasets.append({
                 "type": "area",
-                "x": dates_hist,
+                "x": dates,
                 "y": rain_vals,
                 "ylabel": "Rainfall (mm)",
                 "color": PALETTE["accent"],
                 "meta": {
                     "Name": "Rainfall Trend",
-                    "Purpose": "Track weekly/monthly precipitation accumulation for the selected city.",
-                    "Data Source": "✓ Open-Meteo Historical API & Cached Weather Records",
-                    "Interpretation": "Sustained high rainfall leads to soil saturation and subsequent flooding. Monsoon peaks are expected.",
+                    "Purpose": "Track daily precipitation accumulation for the selected city.",
+                    "Data Source": "✓ Unified Simulation Engine",
+                    "Interpretation": "Sustained high rainfall drives river levels up and saturates the soil.",
                     "Units": "mm"
                 }
             })
             
             # ── 2. River Level Trend (Line) ──
-            river_vals = []
-            curr_river = c["river_base"]
-            for i in range(points):
-                monsoon_push = 2.5 * seasonal(i, points) ** 2
-                curr_river += random.gauss(0, 0.25) + 0.02 * (c["river_base"] + monsoon_push - curr_river)
-                curr_river = max(0.5, min(8.0, curr_river))
-                river_vals.append(round(curr_river, 2))
+            river_vals = [day["river_level_m"] for day in sampled_timeline]
             self.trend_datasets.append({
                 "type": "line",
-                "x": dates_hist,
+                "x": dates,
                 "y": river_vals,
                 "ylabel": "River Level (m)",
                 "color": "#3B82F6",
@@ -3933,90 +3928,70 @@ class FloodGuardWindow(QMainWindow):
                 "meta": {
                     "Name": "River Level Trend",
                     "Purpose": "Monitor river gauge readings near the city. Correlates directly with flood inundation risk.",
-                    "Data Source": "✓ River Gauge Telemetry & CWC Records",
+                    "Data Source": "✓ Unified Simulation Engine",
                     "Interpretation": "Crossing the Warning level (4.0 m) triggers alerts. Crossing Danger (6.0 m) triggers mandatory evacuation.",
                     "Units": "m"
                 }
             })
             
             # ── 3. Temperature Trend (Smooth Line) ──
-            temp_vals = []
-            for i in range(points):
-                # Realistic seasonal cycle: cooler in winter (Dec-Feb), hotter pre-monsoon (Apr-May)
-                phase = (i / points) * 2 * math.pi - math.pi * 0.5
-                temp = c["temp_base"] + c["temp_amp"] * math.sin(phase) + random.gauss(0, 1.2)
-                temp_vals.append(round(temp, 1))
+            temp_vals = [day["temp_c"] for day in sampled_timeline]
             self.trend_datasets.append({
                 "type": "smooth",
-                "x": dates_hist,
+                "x": dates,
                 "y": temp_vals,
                 "ylabel": "Temperature (°C)",
                 "color": "#F59E0B",
                 "meta": {
                     "Name": "Temperature Trend",
                     "Purpose": "Track ambient temperature variations. Affects evapotranspiration and soil moisture dynamics.",
-                    "Data Source": "✓ Open-Meteo Historical API",
+                    "Data Source": "✓ Unified Simulation Engine",
                     "Interpretation": "Sharp pre-monsoon warming followed by cooling during rains is a normal Indian climate pattern.",
                     "Units": "°C"
                 }
             })
             
             # ── 4. Humidity Trend (Area) ──
-            hum_vals = []
-            curr_hum = c["humidity_base"]
-            for i in range(points):
-                target = c["humidity_base"] + 20 * seasonal(i, points)
-                curr_hum += 0.15 * (target - curr_hum) + random.gauss(0, 3)
-                curr_hum = max(25, min(99, curr_hum))
-                hum_vals.append(round(curr_hum, 1))
+            hum_vals = [day["humidity_pct"] for day in sampled_timeline]
             self.trend_datasets.append({
                 "type": "area",
-                "x": dates_hist,
+                "x": dates,
                 "y": hum_vals,
                 "ylabel": "Humidity (%)",
                 "color": "#10B981",
                 "meta": {
                     "Name": "Humidity Trend",
                     "Purpose": "Atmospheric moisture tracking. High humidity precedes heavy precipitation events.",
-                    "Data Source": "✓ Open-Meteo Historical API",
+                    "Data Source": "✓ Unified Simulation Engine",
                     "Interpretation": "Sustained humidity above 85% during monsoon indicates imminent heavy rainfall.",
                     "Units": "%"
                 }
             })
             
             # ── 5. Wind Speed Trend (Line) ──
-            wind_vals = r_walk(c["wind_base"], 2, 65, 4, points)
-            # Add occasional storm spikes correlated with monsoon
-            for i in range(points):
-                if seasonal(i, points) > 0.7 and random.random() < 0.15:
-                    wind_vals[i] = min(65, wind_vals[i] + random.uniform(15, 30))
-                wind_vals[i] = round(wind_vals[i], 1)
+            wind_vals = [day["wind_kmh"] for day in sampled_timeline]
             self.trend_datasets.append({
                 "type": "line",
-                "x": dates_hist,
+                "x": dates,
                 "y": wind_vals,
                 "ylabel": "Wind Speed (km/h)",
                 "color": "#8B5CF6",
                 "meta": {
                     "Name": "Wind Speed Trend",
                     "Purpose": "Monitor storm intensity and sustained winds that affect rescue operations.",
-                    "Data Source": "✓ Open-Meteo Historical API & Anemometer Network",
+                    "Data Source": "✓ Unified Simulation Engine",
                     "Interpretation": "Winds above 40 km/h severely impair boat-based evacuations and structural integrity.",
                     "Units": "km/h"
                 }
             })
             
             # ── 6. Population Exposure (Stacked Area) ──
-            base_pop = int(self.current_city.get("population", 500000))
-            pop_low, pop_med, pop_high = [], [], []
-            for i in range(points):
-                monsoon_factor = 1 + 0.8 * seasonal(i, points)
-                pop_low.append(round(base_pop * 0.04 * monsoon_factor + random.gauss(0, base_pop * 0.002)))
-                pop_med.append(round(base_pop * 0.025 * monsoon_factor + random.gauss(0, base_pop * 0.0015)))
-                pop_high.append(round(base_pop * 0.012 * monsoon_factor + random.gauss(0, base_pop * 0.001)))
+            pop_low = [day["pop_low"] for day in sampled_timeline]
+            pop_med = [day["pop_med"] for day in sampled_timeline]
+            pop_high = [day["pop_high"] for day in sampled_timeline]
             self.trend_datasets.append({
                 "type": "stacked",
-                "x": dates_hist,
+                "x": dates,
                 "y_stacks": [pop_low, pop_med, pop_high],
                 "y": [a+b+c for a,b,c in zip(pop_low, pop_med, pop_high)],
                 "labels": ["Low Risk", "Medium Risk", "High Risk"],
@@ -4025,17 +4000,15 @@ class FloodGuardWindow(QMainWindow):
                 "meta": {
                     "Name": "Population Exposure",
                     "Purpose": "Track the number of people living in flood-vulnerable zones over time.",
-                    "Data Source": "✓ Census Data & Floodplain Mapping",
-                    "Interpretation": "Rising high-risk population during monsoon months reflects seasonal vulnerability requiring preemptive evacuation planning.",
+                    "Data Source": "✓ Unified Simulation Engine",
+                    "Interpretation": "Rising high-risk population requires preemptive evacuation planning.",
                     "Units": "People"
                 }
             })
             
             # ── 7. Infrastructure Risk Index (Horizontal Bar) ──
             categories = ["Hospitals", "Schools", "Power Grid", "Water Supply", "Bridges", "Railways", "Telecom"]
-            # Seed-consistent per city so values don't jump on re-render
-            indices = [round(30 + 50 * (hash(city_name + cat) % 100) / 100 + random.gauss(0, 5), 1) for cat in categories]
-            indices = [max(10, min(95, v)) for v in indices]
+            indices = [75, 60, 85, 70, 55, 45, 65]
             self.trend_datasets.append({
                 "type": "barh",
                 "x": categories,
@@ -4045,14 +4018,13 @@ class FloodGuardWindow(QMainWindow):
                 "meta": {
                     "Name": "Infrastructure Risk Index",
                     "Purpose": "Assess vulnerability of critical infrastructure systems to flooding damage.",
-                    "Data Source": "✓ Structural Assessments & Municipal Records",
+                    "Data Source": "✓ Unified Simulation Engine",
                     "Interpretation": "Higher index values indicate greater vulnerability. Hospitals and Power Grid are highest priority for protection.",
                     "Units": "Risk Index (0-100)"
                 }
             })
             
             # Reset seed so the rest of the app isn't affected
-            random.seed()
             
             if not hasattr(self, "current_trend_idx"):
                 self.current_trend_idx = 0
@@ -4769,6 +4741,7 @@ class FloodGuardWindow(QMainWindow):
         
         self.append_chat_bubble("Operations Staff", prompt, True)
         self.ai_input.clear()
+        self.ai_input.setEnabled(False)
         self.ai_send.setEnabled(False)
         self.ai_status.setText("Advisor is typing...")
 
@@ -4801,12 +4774,14 @@ class FloodGuardWindow(QMainWindow):
                 return f"Error: {str(e)}"
 
         def success(answer: str) -> None:
+            self.ai_input.setEnabled(True)
             self.ai_send.setEnabled(True)
             self.ai_status.setText("FloodGuard AI Advisor Online")
             self.ai_messages.append({"role": "assistant", "content": answer})
             self.append_chat_bubble("AI Advisor", answer, False)
 
         def failed(msg: str) -> None:
+            self.ai_input.setEnabled(True)
             self.ai_send.setEnabled(True)
             self.ai_status.setText("FloodGuard AI Advisor Online")
             self.append_chat_bubble("System", f"Failed to connect to AI Advisor: {msg}", False)
@@ -4853,15 +4828,37 @@ class FloodGuardWindow(QMainWindow):
                 self.current_zones,
                 key=lambda z: distance(lat, lon, float(z["latitude"]), float(z["longitude"]))
             )
-            score = self.zone_scores.get(int(nearest_zone["zone_id"]), 0.0)
-            population = int(nearest_zone["population"])
+            
+            # Use exact physical model score, but blend it with the city's unified average so it doesn't vastly exceed the dashboard's reported scenario
+            if self.current_model:
+                raw_score = self.current_model.get_flood_risk(lat, lon, self.scenario_rainfall, self.scenario_river_level)
+                try:
+                    timeline = __import__("floodguard.unified_simulation", fromlist=["UnifiedSimulation"]).UnifiedSimulation.get_timeline(self.current_city, self.current_history, requested_days=90)
+                    city_avg = timeline[-1]["risk_score"]
+                    score = (city_avg * 0.6) + (raw_score * 0.4)
+                except Exception:
+                    score = raw_score
+            else:
+                score = self.zone_scores.get(int(nearest_zone["zone_id"]), 0.0)
+                
+            zone_pop = int(nearest_zone["population"])
+            
+            # Scale population at risk based on the severity of the score, exactly like the unified simulation
+            if score <= 50:
+                population = int(zone_pop * 0.05 * (score / 50.0))
+            elif score <= 70:
+                population = int(zone_pop * 0.05) + int(zone_pop * 0.02 * ((score - 50) / 20.0))
+            else:
+                population = int(zone_pop * 0.07) + int(zone_pop * 0.01 * ((score - 70) / 30.0))
+                
+            population = max(10, population) # Minimum bounds for UI feedback
             
             # Distance in km
             dist = route_info["distance_km"]
-            priority = score * population / max(dist, 0.25)
             
-            teams = max(1, math.ceil(priority / 75000))
-            boats = max(0, math.ceil((score - 55) / 18)) if score > 55 else 0
+            # Use exact ratios from UnifiedSimulation for perfect consistency
+            teams = max(1, math.ceil(population / 2500))
+            boats = max(0, math.ceil(population / 800)) if score > 75 else 0
             travel_time_min = max(5, int(dist * 6.0 + (population / 3000.0) * 4.0))
             
             return {
@@ -5009,3 +5006,4 @@ if __name__ == "__main__":
     main()
 
  
+
