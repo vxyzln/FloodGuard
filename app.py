@@ -18,7 +18,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.image as mpimg
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -597,6 +597,12 @@ class FloodGuardWindow(QMainWindow):
         self.scenario_river_level = 0.0
         self.active_model: str | None = None
         self.ai_messages: list[dict] = []
+        self.evac_debounce_timer = QTimer()
+        self.evac_debounce_timer.setSingleShot(True)
+        self.evac_debounce_timer.timeout.connect(self._execute_evac_click)
+        self._last_click_lat = None
+        self._last_click_lon = None
+        
         app_instance = QApplication.instance()
         if app_instance:
             app_instance.aboutToQuit.connect(self.shutdown_workers)
@@ -2740,6 +2746,19 @@ class FloodGuardWindow(QMainWindow):
 
         self.run_background(task, self.apply_risk_result)
 
+    def kiosk_reset(self) -> None:
+        import logging
+        logging.info("Kiosk Mode: 3 minutes of inactivity. Resetting dashboard.")
+        # Reset sliders
+        self.reset_scenario()
+        # Clear AI chat
+        self.ai_messages.clear()
+        clear_layout(self.ai_chat_layout)
+        # Return to home
+        if hasattr(self, "sidebar_buttons") and self.sidebar_buttons:
+            self.sidebar_buttons[0].setChecked(True)
+        self.switch_page(0)
+
     def reset_scenario(self) -> None:
         self.scenario_rainfall = self.real_rainfall
         self.scenario_river_level = self.real_river_level
@@ -4761,6 +4780,10 @@ class FloodGuardWindow(QMainWindow):
             
         self.ai_messages.append({"role": "user", "content": prompt})
 
+        # Kiosk Mode: Cap memory to 11 messages (1 system + 10 history) to prevent OOM
+        if len(self.ai_messages) > 11:
+            self.ai_messages = [self.ai_messages[0]] + self.ai_messages[-10:]
+
         payload_messages = list(self.ai_messages)
         model = self.active_model
 
@@ -4794,6 +4817,17 @@ class FloodGuardWindow(QMainWindow):
         if not self.current_zones:
             return
             
+        self._last_click_lat = lat
+        self._last_click_lon = lon
+        self.evac_debounce_timer.start(500)
+
+    def _execute_evac_click(self) -> None:
+        if not self.current_zones or self._last_click_lat is None:
+            return
+            
+        lat = self._last_click_lat
+        lon = self._last_click_lon
+        
         def task() -> dict:
             import json
             import math
@@ -4933,12 +4967,42 @@ def alert_color(level: str) -> str:
     }[level]
 
 
+def global_exception_handler(exctype, value, traceback):
+    import traceback as tb
+    import logging
+    err_msg = "".join(tb.format_exception(exctype, value, traceback))
+    logging.error(f"Global Crash Prevented:\n{err_msg}")
+    print(f"CRASH PREVENTED: {value}")
+
+class KioskEventFilter(QObject):
+    def __init__(self, timer):
+        super().__init__()
+        self.timer = timer
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if event.type() in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
+            self.timer.start()
+        return False
+
 def main() -> None:
+    import sys
+    sys.excepthook = global_exception_handler
+    
     app = QApplication(sys.argv)
     window = FloodGuardWindow()
+    
+    # Kiosk Mode Auto-Reset (3 minutes = 180,000 ms)
+    kiosk_timer = QTimer()
+    kiosk_timer.setInterval(180000)
+    kiosk_timer.timeout.connect(window.kiosk_reset)
+    
+    kiosk_filter = KioskEventFilter(kiosk_timer)
+    app.installEventFilter(kiosk_filter)
+    kiosk_timer.start()
+    
     window.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

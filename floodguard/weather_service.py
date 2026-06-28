@@ -59,7 +59,7 @@ class WeatherService:
             "forecast_days": 3,
         }
         
-        max_attempts = 5
+        max_attempts = 15
         last_exception = None
         
         for attempt in range(max_attempts):
@@ -79,7 +79,7 @@ class WeatherService:
                     logging.warning(f"Weather API Rate Limited (Attempt {attempt+1}/{max_attempts}, {response_time_ms}ms)")
                     last_exception = WeatherRateLimitError("API Rate Limit Reached")
                     if attempt < max_attempts - 1:
-                        time.sleep(2 ** attempt)
+                        time.sleep(min(20, 2 ** attempt))
                     continue
                 elif 400 <= response.status_code < 500:
                     logging.error(f"Weather API Client Error {response.status_code} (Attempt {attempt+1}/{max_attempts}, {response_time_ms}ms)")
@@ -93,7 +93,7 @@ class WeatherService:
                     logging.warning(f"Weather API Invalid JSON (Attempt {attempt+1}/{max_attempts}, {response_time_ms}ms)")
                     last_exception = WeatherInvalidResponseError("Invalid Response Received (Not JSON)")
                     if attempt < max_attempts - 1:
-                        time.sleep(2 ** attempt)
+                        time.sleep(min(20, 2 ** attempt))
                     continue
                     
                 current = payload.get("current", {})
@@ -120,14 +120,14 @@ class WeatherService:
                 logging.warning(f"Weather API Timeout (Attempt {attempt+1}/{max_attempts}, {response_time_ms}ms)")
                 last_exception = WeatherTimeoutError("Connection Timed Out")
                 if attempt < max_attempts - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(min(20, 2 ** attempt))
                     
             except requests.exceptions.RequestException as e:
                 response_time_ms = int((time.time() - start_time) * 1000)
                 logging.warning(f"Weather API Network Error: {e} (Attempt {attempt+1}/{max_attempts}, {response_time_ms}ms)")
                 last_exception = WeatherConnectionError("Unable to Reach Weather Server")
                 if attempt < max_attempts - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(min(20, 2 ** attempt))
                     
         logging.error(f"Weather API exhausted retries. Last error: {str(last_exception)}")
         if last_exception:
