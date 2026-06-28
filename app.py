@@ -99,12 +99,6 @@ def check_internet(host="8.8.8.8", port=53, timeout=3.0) -> bool:
         
     return False
 
-def check_api_availability(timeout=2.5) -> bool:
-    try:
-        response = requests.get("https://api.open-meteo.com/v1/forecast", params={"latitude": 0, "longitude": 0}, timeout=timeout)
-        return response.status_code == 200
-    except Exception:
-        return False
 
 class ClickableLabel(QLabel):
     clicked = pyqtSignal()
@@ -422,6 +416,7 @@ class MplCanvas(FigureCanvas):
 class BackgroundWorker(QObject):
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(object)
 
     def __init__(self, task) -> None:
         super().__init__()
@@ -429,7 +424,12 @@ class BackgroundWorker(QObject):
 
     def run(self) -> None:
         try:
-            self.finished.emit(self.task())
+            import inspect
+            sig = inspect.signature(self.task)
+            if len(sig.parameters) > 0:
+                self.finished.emit(self.task(self.progress.emit))
+            else:
+                self.finished.emit(self.task())
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -577,7 +577,6 @@ class FloodGuardWindow(QMainWindow):
         self.current_shelters: list[dict] = []
         self.current_infra: list[dict] = []
         self.current_history: list[dict] = []
-        self.current_historical_flood_points: list[dict] = []
         self.current_model: CityDistributionModel | None = None
         self.zone_results: dict[int, RiskResult] = {}
         self.zone_scores: dict[int, float] = {}
@@ -667,12 +666,14 @@ class FloodGuardWindow(QMainWindow):
         if index == 4:
             self.refresh_trends()
 
-    def run_background(self, task, on_success, on_error=None) -> None:
+    def run_background(self, task, on_success, on_error=None, on_progress=None) -> None:
         thread = QThread(self)
         worker = BackgroundWorker(task)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(on_success)
+        if on_progress:
+            worker.progress.connect(on_progress)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(on_error or self.handle_background_error)
@@ -1134,7 +1135,6 @@ class FloodGuardWindow(QMainWindow):
         self.layer_population = QCheckBox("Population Density")
         self.layer_risk = QCheckBox("Flood Risk")
         self.layer_elevation = QCheckBox("Elevation")
-        self.layer_history = QCheckBox("Historical Flood Extent")
         self.layer_infra = QCheckBox("Critical Infrastructure")
         self.layer_evac = QCheckBox("Evacuation Points")
         
@@ -1142,7 +1142,6 @@ class FloodGuardWindow(QMainWindow):
             self.layer_population,
             self.layer_risk,
             self.layer_elevation,
-            self.layer_history,
             self.layer_infra,
             self.layer_evac
         ]
@@ -2000,9 +1999,11 @@ class FloodGuardWindow(QMainWindow):
             self.set_home_status(self.weather_status_card, "Fetching", PALETTE["yellow"])
             
             def check_online_status() -> dict:
-                internet = check_internet()
-                api = check_api_availability() if internet else False
-                return {"internet": internet, "api": api}
+                if not check_internet():
+                    return {"internet": False, "api": False, "status": "Offline", "message": "No internet connection"}
+                from floodguard.weather_service import WeatherService
+                status_info = WeatherService.check_status()
+                return {"internet": True, "api": status_info["status"] == "Connected", "status": status_info["status"], "message": status_info["message"]}
                 
             def success(res: dict) -> None:
                 if res["internet"] and res["api"]:
@@ -2010,22 +2011,29 @@ class FloodGuardWindow(QMainWindow):
                     if hasattr(self, "btn_refresh_all"):
                         self.btn_refresh_all.setVisible(True)
                 else:
-                    self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+                    status_str = res.get("status", "Error")
+                    color = PALETTE["red"]
+                    if status_str == "Offline":
+                        color = PALETTE["muted"]
+                    elif status_str == "Timeout":
+                        color = PALETTE["red"]
+                    self.set_home_status(self.weather_status_card, status_str, color)
+                    
                     if hasattr(self, "btn_refresh_all"):
                         self.btn_refresh_all.setVisible(False)
                     if not res["internet"]:
                         self.home_message.setText("No internet connection available.")
                         logger.error("API failure: No internet connection available.")
                     else:
-                        self.home_message.setText("Unable to fetch live data. Using cached data.")
-                        logger.error("API failure: Weather API is unavailable.")
+                        self.home_message.setText(f"{res.get('message', 'API Error')} - Using Cached Weather Data.")
+                        logger.error(f"API failure: {res.get('message', 'Weather API is unavailable.')}")
                 self.fetch_weather_if_online()
                 
             def failed(msg: str) -> None:
                 self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
                 if hasattr(self, "btn_refresh_all"):
                     self.btn_refresh_all.setVisible(False)
-                self.home_message.setText("Unable to fetch live data. Using cached data.")
+                self.home_message.setText(f"{msg} - Using Cached Weather Data.")
                 logger.error(f"API failure: {msg}")
                 self.fetch_weather_if_online()
                 
@@ -2275,7 +2283,6 @@ class FloodGuardWindow(QMainWindow):
         self.current_shelters = payload["shelters"]
         self.current_infra = payload["infrastructure"]
         self.current_history = payload["history"]
-        self.current_historical_flood_points = payload.get("historical_flood_points", [])
         
         # Initialize CityDistributionModel
         self.current_model = CityDistributionModel(
@@ -2350,12 +2357,25 @@ class FloodGuardWindow(QMainWindow):
         lat = float(self.current_city["latitude"])
         lon = float(self.current_city["longitude"])
 
-        def task() -> dict:
+        def task(progress_cb) -> dict:
             if not check_internet():
                 raise ConnectionError("No internet connection available.")
-            payload = self.weather_service.fetch_weather(lat, lon)
+            def progress(attempt, max_attempts):
+                progress_cb((attempt, max_attempts))
+            payload = self.weather_service.fetch_weather(lat, lon, progress_callback=progress)
             self.cache_service.update_city(city_id, payload)
             return payload
+            
+        def on_prog(data):
+            attempt, max_attempts = data
+            if attempt > 1:
+                msg = f"Retrying (Attempt {attempt} of {max_attempts})"
+                if hasattr(self, "weather_status_card"):
+                    self.set_home_status(self.weather_status_card, msg, PALETTE["yellow"])
+                if hasattr(self, "home_loading"):
+                    self.home_loading.setText(f"Weather API: {msg}...")
+                if hasattr(self, "dashboard_status"):
+                    self.dashboard_status.setText(f"Weather API: {msg}...")
 
         def success(payload: dict) -> None:
             self.real_temperature = float(payload["temperature"])
@@ -2393,20 +2413,16 @@ class FloodGuardWindow(QMainWindow):
         def failed(message: str) -> None:
             self.using_cached = True
             if hasattr(self, "weather_status_card"):
-                self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+                self.set_home_status(self.weather_status_card, "Offline", PALETTE["muted"])
             if hasattr(self, "home_loading"):
                 self.home_loading.setText("")
             if hasattr(self, "dashboard_status"):
                 self.dashboard_status.setText("Using stored data")
             
-            if "no internet" in message.lower() or "connection" in message.lower():
-                self.home_message.setText("No internet connection available.")
-                logger.error(f"API failure: {message}")
-            else:
-                self.home_message.setText("Unable to fetch live data. Using cached data.")
-                logger.error(f"API failure: {message}")
+            self.home_message.setText(f"{message} - Using Cached Weather Data.")
+            logger.error(f"API failure: {message}")
 
-        self.run_background(task, success, failed)
+        self.run_background(task, success, failed, on_progress=on_prog)
 
     def apply_db_overview(self, cities: list[dict]) -> None:
         self.cities_list = cities
@@ -2519,15 +2535,22 @@ class FloodGuardWindow(QMainWindow):
         dialog.exec()
 
     def refresh_all_cached_data(self) -> None:
+        if hasattr(self, "btn_refresh_all") and not self.btn_refresh_all.isEnabled():
+            return
+        if hasattr(self, "btn_refresh_all"):
+            self.btn_refresh_all.setEnabled(False)
+            
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTextEdit, QPushButton
         
         # Check if internet is available first
         self.set_home_status(self.weather_status_card, "Fetching", PALETTE["yellow"])
         if not check_internet():
-            self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+            self.set_home_status(self.weather_status_card, "Offline", PALETTE["muted"])
             self.home_message.setText("✗ No internet connection")
             QMessageBox.warning(self, "Network Error", "No internet connection available. Cannot refresh data.")
             logger.error("Refresh failure: No internet connection available.")
+            if hasattr(self, "btn_refresh_all"):
+                self.btn_refresh_all.setEnabled(True)
             return
 
         # Fetch cached cities
@@ -2548,13 +2571,15 @@ class FloodGuardWindow(QMainWindow):
                     return True
             lu_naive = lu.replace(tzinfo=None) if lu.tzinfo else lu
             diff = datetime.now() - lu_naive
-            return diff.total_seconds() > 5 * 60
+            return diff.total_seconds() > 2 * 60
 
         # Filter stale cities
         stale_cities = [c for c in cities if is_city_stale(c)]
         if not stale_cities:
             self.set_home_status(self.weather_status_card, "Connected", PALETTE["green"])
-            QMessageBox.information(self, "Refresh Complete", "All cached cities are up to date (updated within the last 5 minutes).")
+            QMessageBox.information(self, "Refresh Complete", "All cached cities are up to date (updated within the last 2 minutes).")
+            if hasattr(self, "btn_refresh_all"):
+                self.btn_refresh_all.setEnabled(True)
             return
 
         # Set status cards
@@ -2593,6 +2618,8 @@ class FloodGuardWindow(QMainWindow):
                 close_btn.setEnabled(True)
                 self.update_db_overview()
                 self.update_home_status_cards()
+                if hasattr(self, "btn_refresh_all"):
+                    self.btn_refresh_all.setEnabled(True)
                 logger.info("Refresh All: Completed successfully")
                 return
                 
@@ -2604,15 +2631,24 @@ class FloodGuardWindow(QMainWindow):
             
             progress_area.append(f"Refreshing {city_name}...")
             
-            def task() -> dict:
+            def task(progress_cb) -> dict:
                 try:
-                    weather_data = self.weather_service.fetch_weather(lat, lon)
+                    def progress(attempt, max_attempts):
+                        progress_cb((attempt, max_attempts))
+                    weather_data = self.weather_service.fetch_weather(lat, lon, progress_callback=progress)
                     self.cache_service.update_city(city_id, weather_data)
                     logger.info(f"Cache update: Successfully updated cache for city {city_name} (ID: {city_id})")
                     return {"success": True, "name": city_name}
                 except Exception as e:
                     logger.error(f"Refresh failure: Failed to refresh {city_name} (ID: {city_id}): {e}")
                     return {"success": False, "name": city_name, "error": str(e)}
+
+            def on_prog(data):
+                attempt, max_attempts = data
+                if attempt > 1:
+                    msg = f"Retrying {city_name} (Attempt {attempt} of {max_attempts})"
+                    self.set_home_status(self.weather_status_card, msg, PALETTE["yellow"])
+                    progress_area.append(f"  → {msg}...")
                     
             def success(res: dict) -> None:
                 if res["success"]:
@@ -2621,7 +2657,7 @@ class FloodGuardWindow(QMainWindow):
                     progress_area.append(f"{res['name']} ✗ ({res['error']})")
                 process_city(index + 1)
                 
-            self.run_background(task, success)
+            self.run_background(task, success, on_progress=on_prog)
             
         process_city(0)
 
@@ -2834,14 +2870,7 @@ class FloodGuardWindow(QMainWindow):
             zoom_control=False
         )
         
-        def get_distance(lat1, lon1, lat2, lon2):
-            return ((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5
 
-        def get_zone_score(zone_id):
-            val = self.zone_scores.get(int(zone_id))
-            if val is None:
-                val = self.zone_scores.get(str(zone_id))
-            return val if val is not None else 0.0
 
         if self.current_zones:
             lats = [float(z["latitude"]) for z in self.current_zones]
@@ -2852,38 +2881,7 @@ class FloodGuardWindow(QMainWindow):
             lat_min, lat_max = city["latitude"] - 0.1, city["latitude"] + 0.1
             lon_min, lon_max = city["longitude"] - 0.1, city["longitude"] + 0.1
 
-        # 1. Winding River Spline
-        river_lons = np.linspace(lon_min - 0.05, lon_max + 0.05, 200)
-        river_points = []
-        for rl in river_lons:
-            # Formula matching model: lat = city_lat + 0.035 * sin(18 * (lon - city_lon)) + 0.01 * (lon - city_lon)
-            rlat = city["latitude"] + 0.035 * math.sin(18.0 * (rl - city["longitude"])) + 0.01 * (rl - city["longitude"])
-            river_points.append([rlat, rl])
-            
-        folium.PolyLine(
-            locations=river_points,
-            color="#2563EB",
-            weight=8,
-            opacity=0.85,
-            tooltip="River Channel"
-        ).add_to(m)
 
-        # 2. Major Roads
-        road1_m = 3.0
-        road1_c = city["latitude"] - road1_m * city["longitude"]
-        road2_m = -0.3
-        road2_c = city["latitude"] - road2_m * city["longitude"]
-        
-        road_lons = np.linspace(lon_min - 0.05, lon_max + 0.05, 50)
-        road1_pts = [[road1_m * rl + road1_c, rl] for rl in road_lons]
-        road2_pts = [[road2_m * rl + road2_c, rl] for rl in road_lons]
-        
-        # Clip to map boundaries
-        road1_pts = [pt for pt in road1_pts if lat_min - 0.1 <= pt[0] <= lat_max + 0.1]
-        road2_pts = [pt for pt in road2_pts if lat_min - 0.1 <= pt[0] <= lat_max + 0.1]
-        
-        folium.PolyLine(locations=road1_pts, color="#6B7280", weight=4, opacity=0.7, tooltip="National Highway").add_to(m)
-        folium.PolyLine(locations=road2_pts, color="#6B7280", weight=3.5, opacity=0.7, tooltip="State Highway").add_to(m)
 
         # 3. Predicted Flood Area Contour Polygons
         if self.current_model:
@@ -2960,69 +2958,7 @@ class FloodGuardWindow(QMainWindow):
                             ).add_to(m)
             plt.close(fig)
 
-        # 4. Affected Zones (Hexagons with Popups)
-        def get_hexagon_coords(zlat, zlon, radius=0.015):
-            hex_coords = []
-            for k in range(6):
-                angle = math.pi / 3 * k
-                hex_coords.append([zlat + radius * math.sin(angle), zlon + radius * 1.2 * math.cos(angle)])
-            return hex_coords
 
-        if self.current_zones:
-            for zone in self.current_zones:
-                zone_id = int(zone["zone_id"])
-                zone_score = get_zone_score(zone_id)
-                
-                if zone_score >= 90.0:
-                    zone_color = "#7F1D1D"
-                    suggested_action = "CRITICAL ALERT: Initiate immediate evacuation. Move to nearest shelter now. Do not traverse flooded areas."
-                elif zone_score >= 70.0:
-                    zone_color = "#EF4444"
-                    suggested_action = "HIGH RISK: Secure essential belongings and prepare for evacuation. Monitor emergency broadcasts."
-                elif zone_score >= 50.0:
-                    zone_color = "#F97316"
-                    suggested_action = "MODERATE RISK: Stay indoors, move valuables to upper levels, avoid low-lying roads."
-                elif zone_score >= 30.0:
-                    zone_color = "#FBBF24"
-                    suggested_action = "LOW RISK: Alert. Monitor rainfall and river levels. Ensure emergency kit is ready."
-                else:
-                    zone_color = "#10B981"
-                    suggested_action = "SAFE AREA: Normal vigilance. Maintain readiness and support community efforts."
-                
-                water_depth = max(0.0, (zone_score - 30.0) / 20.0) * (1.0 + 0.2 * max(0.0, self.scenario_river_level))
-                if zone_score < 30.0:
-                    water_depth = 0.0
-                    
-                nearest_s = min(self.current_shelters, key=lambda s: get_distance(float(s["latitude"]), float(s["longitude"]), float(zone["latitude"]), float(zone["longitude"]))) if self.current_shelters else None
-                nearest_shelter_name = nearest_s["name"] if nearest_s else "None"
-                
-                popup_html = f"""
-                <div style="font-family: 'SF Pro Text', -apple-system, sans-serif; font-size: 13px; line-height: 1.5; color: #1F2937; min-width: 220px; padding: 6px;">
-                    <h4 style="margin: 0 0 8px 0; color: #111827; font-size: 15px; border-bottom: 2px solid {zone_color}; padding-bottom: 4px;">{zone['name']}</h4>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Est. Population:</td><td style="padding: 4px 0; text-align: right; font-weight: bold;">{int(zone['population']):,}</td></tr>
-                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Est. Water Depth:</td><td style="padding: 4px 0; text-align: right; font-weight: bold;">{water_depth:.2f} m</td></tr>
-                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Risk Score:</td><td style="padding: 4px 0; text-align: right; font-weight: bold; color: {zone_color};">{zone_score:.1f}/100</td></tr>
-                        <tr style="border-bottom: 1px solid #E5E7EB;"><td style="padding: 4px 0; font-weight: 600; color: #4B5563;">Nearest Shelter:</td><td style="padding: 4px 0; text-align: right;">{nearest_shelter_name}</td></tr>
-                    </table>
-                    <div style="margin-top: 10px; background-color: #F9FAFB; border-left: 3px solid {zone_color}; padding: 6px 8px; font-size: 12px; font-style: italic; color: #374151;">
-                        <strong>Suggested Action:</strong> {suggested_action}
-                    </div>
-                </div>
-                """
-                
-                hex_pts = get_hexagon_coords(float(zone["latitude"]), float(zone["longitude"]), radius=0.015)
-                folium.Polygon(
-                    locations=hex_pts,
-                    fill=True,
-                    fill_color=zone_color,
-                    fill_opacity=0.15,
-                    color="#4B5563",
-                    weight=1.5,
-                    opacity=0.7,
-                    popup=folium.Popup(popup_html, max_width=300),
-                    tooltip=f"{zone['name']} (Risk: {zone_score:.1f})"
-                ).add_to(m)
 
         # 5. Evacuation Shelters (Green Markers)
         if self.current_shelters:
@@ -3360,49 +3296,7 @@ class FloodGuardWindow(QMainWindow):
             elev_levels = [-1.0, 20.0, 40.0, 60.0, 80.0, 101.0]
             add_contour_layer(normalized, elev_colors, elev_levels)
             
-        # 4. Historical flood extent layer
-        if self.layer_history.isChecked() and self.current_model:
-            grid_size = 40
-            grid_lats = np.linspace(lat_min, lat_max, grid_size)
-            grid_lons = np.linspace(lon_min, lon_max, grid_size)
-            
-            grid_vals = np.zeros((grid_size, grid_size))
-            for i, lt in enumerate(grid_lats):
-                for j, ln in enumerate(grid_lons):
-                    grid_vals[i, j] = self.current_model.get_historical_flood_frequency(lt, ln)
-                    
-            from scipy.ndimage import gaussian_filter
-            smoothed_grid = gaussian_filter(grid_vals, sigma=2.0)
-            
-            grid_data = []
-            for i, lt in enumerate(grid_lats):
-                for j, ln in enumerate(grid_lons):
-                    grid_data.append([lt, ln, float(smoothed_grid[i, j])])
-                    
-            if grid_data:
-                folium.plugins.HeatMap(
-                    grid_data,
-                    radius=35,
-                    blur=25,
-                    min_opacity=0.25,
-                    gradient={0.2: '#93C5FD', 0.6: '#3B82F6', 1.0: '#1D4ED8'}
-                ).add_to(m)
-                
-            # Place blue markers for historical flood incidents
-            for pt in self.current_historical_flood_points:
-                popup_content = get_popup_html(
-                    pt["name"], 
-                    "historical_flood_point", 
-                    pt["latitude"], 
-                    pt["longitude"],
-                    status_override="Historically Flooded"
-                )
-                folium.Marker(
-                    location=[pt["latitude"], pt["longitude"]],
-                    icon=folium.Icon(color="blue", icon="tint"),
-                    popup=folium.Popup(popup_content, max_width=300)
-                ).add_to(m)
-                    
+
         # 5. Critical infrastructure layer
         if self.layer_infra.isChecked() and self.current_infra:
             for inf in self.current_infra:
@@ -4353,9 +4247,11 @@ class FloodGuardWindow(QMainWindow):
             # Weather API Status
             if self.online_mode:
                 def check_api() -> dict:
-                    internet = check_internet()
-                    api = check_api_availability() if internet else False
-                    return {"internet": internet, "api": api}
+                    if not check_internet():
+                        return {"internet": False, "api": False, "status": "Offline", "message": "No internet connection"}
+                    from floodguard.weather_service import WeatherService
+                    status_info = WeatherService.check_status()
+                    return {"internet": True, "api": status_info["status"] == "Connected", "status": status_info["status"], "message": status_info["message"]}
                     
                 def success_api(api_res: dict) -> None:
                     if api_res["internet"] and api_res["api"]:
@@ -4363,7 +4259,13 @@ class FloodGuardWindow(QMainWindow):
                         if hasattr(self, "btn_refresh_all"):
                             self.btn_refresh_all.setVisible(True)
                     else:
-                        self.set_home_status(self.weather_status_card, "Error", PALETTE["red"])
+                        status_str = api_res.get("status", "Error")
+                        color = PALETTE["red"]
+                        if status_str == "Offline":
+                            color = PALETTE["muted"]
+                        elif status_str == "Timeout":
+                            color = PALETTE["red"]
+                        self.set_home_status(self.weather_status_card, status_str, color)
                         if hasattr(self, "btn_refresh_all"):
                             self.btn_refresh_all.setVisible(False)
                             
@@ -4786,7 +4688,6 @@ class FloodGuardWindow(QMainWindow):
         if self.layer_population.isChecked(): active_layers.append("Population Density")
         if self.layer_risk.isChecked(): active_layers.append("Flood Risk Contour Map")
         if self.layer_elevation.isChecked(): active_layers.append("Elevation Contour Map")
-        if self.layer_history.isChecked(): active_layers.append("Historical Flood Extent")
         if self.layer_infra.isChecked(): active_layers.append("Critical Infrastructure Locations")
         if self.layer_evac.isChecked(): active_layers.append("Evacuation Points & Shelter Markers")
         map_layer_analysis = ", ".join(active_layers) if active_layers else "None"
