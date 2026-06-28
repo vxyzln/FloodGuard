@@ -2748,12 +2748,13 @@ class FloodGuardWindow(QMainWindow):
 
     def kiosk_reset(self) -> None:
         import logging
-        logging.info("Kiosk Mode: 3 minutes of inactivity. Resetting dashboard.")
+        logging.info("Kiosk Mode: 2 minutes of inactivity. Resetting dashboard.")
         # Reset sliders
         self.reset_scenario()
         # Clear AI chat
         self.ai_messages.clear()
-        clear_layout(self.ai_chat_layout)
+        if hasattr(self, "ai_chat"):
+            self.ai_chat.clear()
         # Return to home
         if hasattr(self, "sidebar_buttons") and self.sidebar_buttons:
             self.sidebar_buttons[0].setChecked(True)
@@ -4975,8 +4976,8 @@ def global_exception_handler(exctype, value, traceback):
     print(f"CRASH PREVENTED: {value}")
 
 class KioskEventFilter(QObject):
-    def __init__(self, timer):
-        super().__init__()
+    def __init__(self, timer, parent=None):
+        super().__init__(parent)
         self.timer = timer
 
     def eventFilter(self, obj, event):
@@ -4992,12 +4993,12 @@ def main() -> None:
     app = QApplication(sys.argv)
     window = FloodGuardWindow()
     
-    # Kiosk Mode Auto-Reset (3 minutes = 180,000 ms)
-    kiosk_timer = QTimer()
-    kiosk_timer.setInterval(180000)
+    # Kiosk Mode Auto-Reset (2 minutes = 120,000 ms)
+    kiosk_timer = QTimer(app)
+    kiosk_timer.setInterval(120000)
     kiosk_timer.timeout.connect(window.kiosk_reset)
     
-    kiosk_filter = KioskEventFilter(kiosk_timer)
+    kiosk_filter = KioskEventFilter(kiosk_timer, app)
     app.installEventFilter(kiosk_filter)
     kiosk_timer.start()
     
