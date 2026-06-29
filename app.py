@@ -613,9 +613,7 @@ class FloodGuardWindow(QMainWindow):
             app_instance.aboutToQuit.connect(self.shutdown_workers)
 
         self.setWindowTitle("FloodGuard")
-        if self.kiosk_mode:
-            from PyQt6.QtCore import Qt
-            self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        pass
         self.resize(1360, 860)
         self.setStyleSheet(STYLE)
         shell = QWidget()
@@ -5006,7 +5004,7 @@ def main() -> None:
         gc_timer.timeout.connect(lambda: gc.collect())
         gc_timer.start()
         
-        window.showFullScreen()
+        window.show()
     else:
         window.show()
         
