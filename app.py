@@ -1512,7 +1512,7 @@ class FloodGuardWindow(QMainWindow):
         self.critical_zone_boats = QLabel("-")
         self.critical_zone_time = QLabel("-")
         
-        add_grid_row(info_grid, 0, "Population", self.critical_zone_pop)
+        add_grid_row(info_grid, 0, "Impacted Pop. (500m)", self.critical_zone_pop)
         add_grid_row(info_grid, 1, "Risk Score", self.critical_zone_risk)
         add_grid_row(info_grid, 2, "Nearest Shelter", self.critical_zone_shelter)
         add_grid_row(info_grid, 3, "Travel Distance", self.critical_zone_dist)
@@ -4830,15 +4830,19 @@ class FloodGuardWindow(QMainWindow):
             else:
                 score = zone_score
                 
-            zone_pop = int(nearest_zone["population"])
-            
-            # Scale population at risk based on the severity of the score, exactly like the unified simulation
-            if score <= 50:
-                population = int(zone_pop * 0.05 * (score / 50.0))
-            elif score <= 70:
-                population = int(zone_pop * 0.05) + int(zone_pop * 0.02 * ((score - 50) / 20.0))
+            if self.current_model:
+                local_density = self.current_model.get_population_density(lat, lon)
+                local_pop_base = int(local_density * 15000) + 50
             else:
-                population = int(zone_pop * 0.07) + int(zone_pop * 0.01 * ((score - 70) / 30.0))
+                local_pop_base = int(nearest_zone["population"] * 0.05)
+
+            # Scale local impacted population within the 500m radius based on the severity of the score
+            if score <= 50:
+                population = int(local_pop_base * 0.2 * (score / 50.0))
+            elif score <= 70:
+                population = int(local_pop_base * 0.2) + int(local_pop_base * 0.3 * ((score - 50) / 20.0))
+            else:
+                population = int(local_pop_base * 0.5) + int(local_pop_base * 0.5 * ((score - 70) / 30.0))
                 
             population = max(10, population) # Minimum bounds for UI feedback
             

@@ -112,20 +112,22 @@ class UnifiedSimulation:
                 season_rad = (i % 365) / 365.0 * 2 * math.pi
                 seasonality = (1 - math.cos(season_rad)) / 2.0 
                 
-                drift = random.gauss(0, 0.18)
-                weather_system += drift
+                drift = random.gauss(0, 0.25)
+                # Mean-reverting random walk towards 0.1 to create distinct storm events rather than a 6-month continuous plateau
+                weather_system += drift + 0.15 * (0.1 - weather_system)
                 
-                max_strength = 0.2 + (seasonality * rain_prob_base * 3.0)
+                max_strength = 0.2 + (seasonality * rain_prob_base * 3.5)
                 weather_system = max(0.0, min(max_strength, weather_system))
                 
-                if weather_system > 0.25:
-                    rain = rain_intensity * (weather_system ** 2) * 4.0
-                    rain += random.gauss(0, rain * 0.1)
-                    rain = max(0.0, min(rain, 300.0))
-                    soil_sat = min(1.0, soil_sat + 0.15)
+                # Higher threshold ensures discrete storms
+                if weather_system > 0.4:
+                    rain = rain_intensity * (weather_system ** 2.5) * 5.0
+                    rain += random.gauss(0, rain * 0.2)
+                    rain = max(0.0, min(rain, 350.0))
+                    soil_sat = min(1.0, soil_sat + 0.2)
                 else:
                     rain = 0.0
-                    soil_sat = max(0.0, soil_sat - 0.05)
+                    soil_sat = max(0.0, soil_sat - 0.08)
                     
                 discharge = 0.12 * current_river
                 runoff_factor = 1.0 + soil_sat * 2.5
