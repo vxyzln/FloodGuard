@@ -1453,14 +1453,12 @@ class FloodGuardWindow(QMainWindow):
         kpi_row = QHBoxLayout()
         kpi_row.setSpacing(12)
         
-        pop_card, self.evac_pop_at_risk_label = self.evac_summary_card("Total Population At Risk")
         zones_card, self.evac_critical_zones_label = self.evac_summary_card("Critical Risk Zones")
         teams_card, self.evac_teams_label = self.evac_summary_card("Rescue Teams Needed")
         boats_card, self.evac_boats_label = self.evac_summary_card("Boats Needed")
         shelters_card, self.evac_shelters_activated_label = self.evac_summary_card("Shelters Activated")
         time_card, self.evac_est_time_label = self.evac_summary_card("Estimated Evacuation Time")
         
-        kpi_row.addWidget(pop_card)
         kpi_row.addWidget(zones_card)
         kpi_row.addWidget(teams_card)
         kpi_row.addWidget(boats_card)
@@ -3497,7 +3495,7 @@ class FloodGuardWindow(QMainWindow):
         critical_zones = sum(1 for row in plan if row['priority_score'] > 100000)
         shelters_activated = len(set(row['shelter']['shelter_id'] for row in plan))
         
-        self.evac_pop_at_risk_label.setText(f"{total_pop_at_risk:,}")
+        # self.evac_pop_at_risk_label removed
         self.evac_critical_zones_label.setText(str(critical_zones))
         self.evac_teams_label.setText(str(total_teams))
         self.evac_boats_label.setText(str(total_boats))
