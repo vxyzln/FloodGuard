@@ -1,32 +1,88 @@
 from datetime import datetime, timedelta
 import math
 import random
+import json
+from pathlib import Path
+from floodguard.config import ROOT
 
 class UnifiedSimulation:
     _cache = {}
+    _disk_cache_path = ROOT / "assets" / "simulation_state.json"
+    _disk_cache_loaded = False
+
+    @classmethod
+    def _load_disk_cache(cls):
+        if cls._disk_cache_loaded:
+            return
+        if cls._disk_cache_path.exists():
+            try:
+                data = json.loads(cls._disk_cache_path.read_text())
+                # JSON keys are strings, convert back to int
+                cls._cache = {int(k): v for k, v in data.items()}
+            except Exception:
+                cls._cache = {}
+        cls._disk_cache_loaded = True
+
+    @classmethod
+    def _save_disk_cache(cls):
+        cls._disk_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # JSON keys must be strings
+        data = {str(k): v for k, v in cls._cache.items()}
+        cls._disk_cache_path.write_text(json.dumps(data, indent=2))
+
+    @classmethod
+    def invalidate_cache(cls, city_id: int) -> None:
+        """Removes a specific city from the simulation cache, forcing a regeneration on next load."""
+        cls._load_disk_cache()
+        if city_id in cls._cache:
+            del cls._cache[city_id]
+            cls._save_disk_cache()
 
     @classmethod
     def get_timeline(cls, city, db_history, requested_days=1825):
         """
         Generates or retrieves a highly correlated simulation timeline up to requested_days.
-        db_history: list of dicts with date, rainfall_mm, river_level_m, flood_occurred (provides the most recent 90 days)
+        db_history: list of dicts with date, rainfall_mm, river_level_m, flood_occurred
         """
+        cls._load_disk_cache()
+        
         city_id = city["city_id"]
         city_name = city["name"]
         
         # Check cache
         if city_id in cls._cache:
-            return cls._cache[city_id]
+            # Ensure the cached timeline has the requested length if possible, or just return it
+            cached = cls._cache[city_id]
+            if len(cached) >= requested_days:
+                return cached[-requested_days:]
+            return cached
             
-        # City-specific climate baselines
-        climate = {
-            "Surat":   {"temp_base": 28, "temp_amp": 6, "humidity_base": 68, "wind_base": 14},
-            "Mumbai":  {"temp_base": 27, "temp_amp": 4, "humidity_base": 75, "wind_base": 18},
-            "Chennai": {"temp_base": 30, "temp_amp": 5, "humidity_base": 72, "wind_base": 16},
-            "Kolkata": {"temp_base": 27, "temp_amp": 8, "humidity_base": 70, "wind_base": 12},
-        }
-        c = climate.get(city_name, {"temp_base": 28, "temp_amp": 6, "humidity_base": 65, "wind_base": 14})
+        # Dynamic Climate Inference based on Coordinates
+        lat = float(city.get("latitude", 20.0))
+        lon = float(city.get("longitude", 78.0))
         
+        # Heuristic: Coastal cities in India are typically West Coast (lon < 74) or East Coast South (lon > 79, lat < 16) or extreme East (Assam)
+        if lon < 74.5 or (lon > 79.5 and lat < 16.5) or lon > 88.0:
+            rain_prob_base = 0.35
+            rain_intensity = 40.0
+            river_base = 2.5
+        elif 22.0 < lat < 28.0 and lon < 76.0:
+            # Arid / Rajasthan / Gujarat inland
+            rain_prob_base = 0.08
+            rain_intensity = 15.0
+            river_base = 1.0
+        elif lat > 26.0:
+            # Northern / Moderate
+            rain_prob_base = 0.22
+            rain_intensity = 25.0
+            river_base = 2.0
+        else:
+            # Central Inland
+            rain_prob_base = 0.15
+            rain_intensity = 20.0
+            river_base = 1.5
+            
+        c = {"temp_base": 28, "temp_amp": 6, "humidity_base": 65, "wind_base": 14}
         timeline = []
         base_pop = int(city.get("population", 500000))
         
@@ -44,26 +100,44 @@ class UnifiedSimulation:
             
         start_date = last_date - timedelta(days=requested_days - 1)
         
+        weather_system = 0.0
+        current_river = river_base
+        soil_sat = 0.0
+        
         for i in range(requested_days):
             current_date = start_date + timedelta(days=i)
             # If we are in the synthesized period (before db_history)
             if i < (requested_days - recent_days):
-                # Synthesize based on seasonal climate
-                phase = (i / 365.0) * 2 * math.pi - math.pi * 0.5
-                monsoon_factor = max(0, math.sin(phase + math.pi*0.2))
+                # Synthesize based on seasonal climate and Auto-Regressive Markov chain
+                season_rad = (i % 365) / 365.0 * 2 * math.pi
+                seasonality = (1 - math.cos(season_rad)) / 2.0 
                 
-                is_flood = False
-                rain = random.gauss(0, 5) + (monsoon_factor * 25.0 if random.random() < 0.3 else 0)
-                rain = max(0, rain)
-                if rain > 40: is_flood = random.random() < 0.2
+                drift = random.gauss(0, 0.18)
+                weather_system += drift
                 
-                river = 2.0 + (monsoon_factor * 2.5) + random.gauss(0, 0.3)
-                if rain > 20: river += (rain / 20.0)
+                max_strength = 0.2 + (seasonality * rain_prob_base * 3.0)
+                weather_system = max(0.0, min(max_strength, weather_system))
+                
+                if weather_system > 0.25:
+                    rain = rain_intensity * (weather_system ** 2) * 4.0
+                    rain += random.gauss(0, rain * 0.1)
+                    rain = max(0.0, min(rain, 300.0))
+                    soil_sat = min(1.0, soil_sat + 0.15)
+                else:
+                    rain = 0.0
+                    soil_sat = max(0.0, soil_sat - 0.05)
+                    
+                discharge = 0.12 * current_river
+                runoff_factor = 1.0 + soil_sat * 2.5
+                runoff = (rain / 35.0) * runoff_factor
+                current_river = max(river_base, current_river - discharge + runoff)
+                
+                is_flood = bool(rain > 80 or current_river > (river_base * 2.2))
                 
                 daily_params.append({
                     "date": current_date.strftime("%Y-%m-%d"),
                     "rainfall_mm": rain,
-                    "river_level_m": river,
+                    "river_level_m": current_river,
                     "flood_occurred": is_flood
                 })
             else:
@@ -101,13 +175,13 @@ class UnifiedSimulation:
             curr_wind = max(2, min(80, curr_wind))
             
             # 4. Synthesized Risk Score (smoothed to prevent flatlining at 100)
-            rain_stress = rain / 60.0
-            river_stress = max(0, (river - 2.5)) / 2.0
-            target_risk = min(85.0, (rain_stress + river_stress) * 22.0) + (10 if is_flood else 0)
+            rain_stress = rain / 80.0
+            river_stress = max(0, (river - 2.5)) / 2.5
+            target_risk = min(80.0, (rain_stress + river_stress) * 20.0) + (15 if is_flood else 5)
             
             # Smooth interpolation with natural volatility so it doesn't just peg at 100
-            curr_risk += 0.25 * (target_risk - curr_risk) + random.gauss(0, 4.0)
-            curr_risk = max(5.0, min(99.5, curr_risk))
+            curr_risk += 0.2 * (target_risk - curr_risk) + random.gauss(0, 3.0)
+            curr_risk = max(10.0 + random.gauss(0, 2), min(95.0, curr_risk))
             risk_score = curr_risk
             
             # 5. Determine Alert Level
@@ -144,6 +218,7 @@ class UnifiedSimulation:
             
         random.seed()
         cls._cache[city_id] = timeline
+        cls._save_disk_cache()
         return timeline
 
     @classmethod

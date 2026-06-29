@@ -235,7 +235,7 @@ class FloodRepository:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO cities
+                INSERT IGNORE INTO cities
                 (city_id, name, state, latitude, longitude, map_image_path, map_lat_min, map_lat_max, map_long_min, map_long_max)
                 VALUES (%(city_id)s,%(name)s,%(state)s,%(latitude)s,%(longitude)s,%(map_image_path)s,%(map_lat_min)s,%(map_lat_max)s,%(map_long_min)s,%(map_long_max)s)
                 """,
@@ -243,7 +243,7 @@ class FloodRepository:
             )
             cursor.executemany(
                 """
-                INSERT INTO zones
+                INSERT IGNORE INTO zones
                 (zone_id, city_id, name, latitude, longitude, elevation_m, population, historical_flood_frequency)
                 VALUES (%(zone_id)s,%(city_id)s,%(name)s,%(latitude)s,%(longitude)s,%(elevation_m)s,%(population)s,%(historical_flood_frequency)s)
                 """,
@@ -251,7 +251,7 @@ class FloodRepository:
             )
             cursor.executemany(
                 """
-                INSERT INTO shelters
+                INSERT IGNORE INTO shelters
                 (shelter_id, city_id, name, latitude, longitude, capacity, current_occupancy)
                 VALUES (%(shelter_id)s,%(city_id)s,%(name)s,%(latitude)s,%(longitude)s,%(capacity)s,%(current_occupancy)s)
                 """,
@@ -259,7 +259,7 @@ class FloodRepository:
             )
             cursor.executemany(
                 """
-                INSERT INTO infrastructure
+                INSERT IGNORE INTO infrastructure
                 (infra_id, city_id, zone_id, type, name, latitude, longitude)
                 VALUES (%(infra_id)s,%(city_id)s,%(zone_id)s,%(type)s,%(name)s,%(latitude)s,%(longitude)s)
                 """,
@@ -267,7 +267,7 @@ class FloodRepository:
             )
             cursor.executemany(
                 """
-                INSERT INTO rainfall_river_history
+                INSERT IGNORE INTO rainfall_river_history
                 (city_id, date, rainfall_mm, river_level_m, flood_occurred)
                 VALUES (%(city_id)s,%(date)s,%(rainfall_mm)s,%(river_level_m)s,%(flood_occurred)s)
                 """,
