@@ -4998,6 +4998,14 @@ def main() -> None:
         kiosk_filter = KioskEventFilter(kiosk_timer, app)
         app.installEventFilter(kiosk_filter)
         kiosk_timer.start()
+        
+        # Deep Garbage Collection (Every 15 minutes = 900,000 ms) to prevent 7-hour memory bloat
+        import gc
+        gc_timer = QTimer(app)
+        gc_timer.setInterval(900000)
+        gc_timer.timeout.connect(lambda: gc.collect())
+        gc_timer.start()
+        
         window.showFullScreen()
     else:
         window.show()
