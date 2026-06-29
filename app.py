@@ -4821,17 +4821,14 @@ class FloodGuardWindow(QMainWindow):
                 key=lambda z: distance(lat, lon, float(z["latitude"]), float(z["longitude"]))
             )
             
-            # Use exact physical model score, but blend it with the city's unified average so it doesn't vastly exceed the dashboard's reported scenario
+            # Read exact dynamic risk score from the ML Engine's single source of truth
+            zone_score = self.zone_scores.get(int(nearest_zone["zone_id"]), 0.0)
             if self.current_model:
+                # Blend the ML zone prediction (60%) with the exact point's geographic risk (40%) for true coordinate-level accuracy
                 raw_score = self.current_model.get_flood_risk(lat, lon, self.scenario_rainfall, self.scenario_river_level)
-                try:
-                    timeline = __import__("floodguard.unified_simulation", fromlist=["UnifiedSimulation"]).UnifiedSimulation.get_timeline(self.current_city, self.current_history, requested_days=90)
-                    city_avg = timeline[-1]["risk_score"]
-                    score = (city_avg * 0.6) + (raw_score * 0.4)
-                except Exception:
-                    score = raw_score
+                score = (zone_score * 0.6) + (raw_score * 0.4)
             else:
-                score = self.zone_scores.get(int(nearest_zone["zone_id"]), 0.0)
+                score = zone_score
                 
             zone_pop = int(nearest_zone["population"])
             
