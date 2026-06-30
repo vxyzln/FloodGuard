@@ -1,8 +1,25 @@
-.DS_Store
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Virtual Environments
 venv/
 .venv/
+env/
+.env/
+
+# IDEs & OS Files
+.DS_Store
+.idea/
+.vscode/
+
+# Project Specific
 assets/seed_cache.json
-logs/*.log
- 
+assets/simulation_state.json
+logs/
+*.log
+
+# Temp / Scratch
+tmp/
+scratch/

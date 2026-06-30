@@ -1,88 +1,89 @@
 # FloodGuard
 
-**FloodGuard** is a professional desktop-based Flood Monitoring and Emergency Response Platform designed for Emergency Operations Centers (EOCs), Disaster Management Authorities, and Smart City Command Centers.
+**FloodGuard** is a professional-grade Emergency Operations Center (EOC) platform designed to provide dynamic flood risk analysis, real-time map visualizations, and AI-driven evacuation protocols.
 
-The platform provides live meteorological intelligence, predictive risk modeling, critical infrastructure mapping, automated evacuation routing, and an integrated local AI Operations Advisor—all operating within a secure, high-contrast command center UI.
-
----
-
-## 🌪️ Key Capabilities
-
-- **Live Meteorological Tracking**: Integrates with Open-Meteo to fetch real-time rainfall, temperature, humidity, and wind speeds for any city.
-- **Predictive Risk Modeling**: Utilizes a trained `scikit-learn` Random Forest model to calculate a 0-100 Flood Risk Score and assigns operational Alert Levels (Green, Yellow, Orange, Red) based on live and historical data.
-- **Scenario Simulation**: Allows command staff to override live data using sliders to simulate "What-if" scenarios (e.g., +20% rainfall) without overwriting the live database cache.
-- **Automated Evacuation Planning**: Geocodes city zones and automatically routes populations to the safest nearest shelters, calculating resource requirements like Rescue Teams and Transport Boats.
-- **Critical Infrastructure Mapping**: Dynamically plots vulnerable infrastructure (Hospitals, Schools, Bridges, Power Stations) onto interactive PyQt6 spatial maps.
-- **AI Operations Advisor**: Features a fully integrated local AI (powered by Ollama and `qwen2.5:3b`) acting as a virtual EOC officer. The AI silently ingests live dashboard context (weather, risk scores, evacuation routes) to generate immediate SitReps, Public Warnings, and Action Plans.
-- **Offline / Caching Resilience**: Prioritizes MySQL local caching. If APIs fail or the center loses connectivity, FloodGuard seamlessly falls back to cached geographic and weather data.
+Originally developed as an exhibition project, this application simulates a complete disaster management backend, featuring machine learning predictions, interactive UI dashboards, and fully automated evacuation routing algorithms.
 
 ---
 
-## 💻 Tech Stack
+## 🌟 Key Features
 
-- **Frontend**: Python 3.12, PyQt6, Matplotlib (for spatial UI plotting)
-- **Backend**: Python, Requests (Open-Meteo & Nominatim APIs)
-- **Database**: MySQL (via `mysql-connector-python`)
-- **Machine Learning**: `scikit-learn` (RandomForestRegressor)
-- **Local AI**: Ollama (`qwen2.5:3b` / `phi3:mini`)
+- **Dynamic Interactive Maps**: High-performance spatial maps built with Folium and PyQt6-WebEngine, featuring real-time heatmaps for flood risk, population density, and infrastructure.
+- **Machine Learning Integration**: Utilizes a Scikit-Learn `RandomForestRegressor` ensemble wrapped in a scaling pipeline to accurately predict flood risks based on historical weather patterns.
+- **Evacuation Command Portal**: Automatically generates prioritized evacuation routes to the nearest shelters, calculating travel times, boats required, and rescue team deployments.
+- **Persistent Synthetic Simulation**: A complex background engine dynamically generates incredibly realistic, day-by-day environmental weather trends using autoregressive mean-reverting algorithms.
+- **AI Emergency Advisor**: Fully offline integration with `Ollama` running the LLaMA 3 model, providing automated disaster insights securely without any external API calls.
+- **Offline Mode**: Operates entirely independently of internet connectivity by utilizing fallback local caches and straight-line heuristic routing.
+- **Kiosk Exhibition Mode**: A specialized hardened environment with deep memory garbage collection (`gc`), ensuring absolute stability for 7+ hour continuous presentations.
+
+## 🏗 Technology Stack
+
+- **Core & UI**: Python 3.10+, PyQt6, PyQt6-WebEngine
+- **Maps & Spatial**: Folium, OSRM API (Online Mode)
+- **Machine Learning**: Scikit-Learn, SciPy, NumPy, Pandas, Joblib
+- **Database**: MySQL Server
+- **Artificial Intelligence**: Ollama (LLaMA 3)
+- **Data APIs**: Open-Meteo
 
 ---
 
-## ⚙️ Installation & Setup
+## 🚀 Installation & Setup
 
-### Prerequisites
-- Python 3.12+
-- MySQL Server (Local)
-- [Ollama](https://ollama.com/) (For AI Advisor capabilities)
+FloodGuard requires Python, MySQL, and Ollama to run locally.
 
-### 1. Clone & Environment
+**1. Clone the Repository:**
 ```bash
 git clone https://github.com/vxyzln/FloodGuard.git
 cd FloodGuard
-python3.12 -m venv venv
-source venv/bin/activate
+```
+
+**2. Setup Virtual Environment:**
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+**3. Install Dependencies:**
+```bash
 pip install -r requirements.txt
 ```
 
-### 2. Database & Data Seeding
-FloodGuard uses a MySQL backend for caching and fast retrieval. The setup scripts will prompt for your MySQL root password if the `FLOODGUARD_DB_PASSWORD` environment variable is not set.
-
+**4. Start Background Services:**
+Ensure your MySQL server is running.
+Start the Ollama AI engine in a separate terminal:
 ```bash
-python setup_db.py
-python seed_data.py
-```
-*(Note: FloodGuard will still operate in a degraded demo mode using local JSON fallbacks if MySQL is entirely unavailable).*
-
-### 3. Machine Learning Model Setup
-Train the baseline Risk Model using the historical seed data:
-```bash
-python train_model.py
+ollama serve
 ```
 
-### 4. Local AI Advisor Setup
-Ensure the Ollama application is installed on your machine. FloodGuard is configured to auto-detect and launch the Ollama service in the background, pull the `qwen2.5:3b` model if missing, preload it on startup, and keep it warm (`keep_alive: -1`) to avoid cold-start delays.
+---
 
-To check model status or run it manually:
-```bash
-ollama run qwen2.5:3b
-```
+## 💻 How to Run
 
-### 5. Launch the Command Center
+Before running the application, ensure your virtual environment is active.
+
+**Standard Desktop Mode**
 ```bash
 python app.py
 ```
 
+**Kiosk / Exhibition Mode**
+*Launches the app in a frameless window with aggressive background memory management.*
+```bash
+python app.py --kiosk
+```
+
+*(Press `Command + Q` or `Alt + F4` to exit Kiosk Mode).*
+
 ---
 
-## 🛡️ Design Philosophy
+## 📁 Documentation
 
-FloodGuard was constructed with strict adherence to **EOC Operational Design Guidelines**:
-- **Aesthetics**: Cream/Light operational palette (`background: #F8F6F2`, `panel: #FFFFFF`, `border: #D6D3D1`, `accent: #0F766E`, `text: #111827`, `muted: #6B7280`). No gamification, no excessive sci-fi gradients.
-- **Workflow**: Absolute separation of Live Intelligence from Scenario Testing.
-- **Authority**: The AI Advisor is locked into a professional persona and strictly forbidden from exposing its LLM nature.
+All technical references, audits, presentation materials, and the complete Startup Guide are located in the `Reading_Material/` directory. If you are a judge or reviewer, please refer to the `FloodGuard_Technical_Audit.md` and `FloodGuard_Judge_Preparation_Handbook.md`.
 
----
+## ⚠️ Known Limitations
+- The application relies heavily on system RAM for generating and rendering multi-layer spatial maps.
+- Initial city load times take ~3-4 seconds due to dynamic HTML file generation for the WebEngine map viewer.
+- The AI Advisor requires significant local GPU/CPU compute (via Ollama).
 
-*Developed for Indian Cities and global Disaster Management Authorities.*
-
- 
+## 📄 License
+This project is open-source and available under standard academic and portfolio-use licenses. Please refer to the `LICENSE` file for details.
